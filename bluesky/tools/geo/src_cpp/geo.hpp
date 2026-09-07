@@ -1,5 +1,9 @@
 #include <cmath>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 // Earth major and minor axes
 static const double a  = 6378137.0,      // [m] Major semi-axis WGS-84
                     b  = 6356752.314245, // [m] Minor semi-axis WGS-84

@@ -1,3 +1,4 @@
+#define _USE_MATH_DEFINES
 #define NPY_NO_DEPRECATED_API NPY_1_10_API_VERSION
 #include "Python.h"
 #include "numpy/arrayobject.h"
