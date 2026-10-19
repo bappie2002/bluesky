@@ -1,6 +1,7 @@
 # Automatically generated directories and files
 /output
-/plugins
+/plugins/*
+!/plugins/thesis/
 /cache
 /scenario/ic.scn
 /bluesky/resources/grib
@@ -94,3 +95,6 @@ ssd.obj
 *-checkpoint.py
 *-checkpoint.ipynb
 .ropeproject/config.py
+
+# Tijdelijke Office-bestanden
+~$*
