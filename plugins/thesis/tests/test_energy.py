@@ -23,9 +23,12 @@ def run(seconds):
 
 def show(label):
     print(f"\n{label} (t = {bs.sim.simt:.0f} s)")
+    print(f"  {'id':<5}{'tas m/s':>8}{'mode':>7}{'power W':>9}{'used Wh':>9}{'SoC':>8}"
+          f"{'hover':>8}{'rotor':>8}{'wing':>8}{'trans':>8}  (Wh per mode)")
     for i, acid in enumerate(bs.traf.id):
-        print(f"  {acid}: tas {bs.traf.tas[i]:5.1f} m/s, on wing {plugin.on_wing[i]!s:5}, "
-              f"used {plugin.used_wh[i]:6.2f} Wh, SoC {plugin.soc[i]:.4f}")
+        print(f"  {acid:<5}{bs.traf.tas[i]:8.1f}{energy.MODES[plugin.mode[i]]:>7}{plugin.power[i]:9.1f}"
+              f"{plugin.used_wh[i]:9.2f}{plugin.soc[i]:8.4f}{plugin.wh_hover[i]:8.2f}{plugin.wh_rotor[i]:8.2f}"
+              f"{plugin.wh_wing[i]:8.2f}{plugin.wh_trans[i]:8.2f}")
 
 
 run(60)
@@ -33,5 +36,8 @@ show("After 60 s")
 bs.stack.stack("LC1 SPD 0")       # Lift+Cruise slows down to hover
 run(60)
 show("After 120 s")
-print(f"\nExpected MC1 after 120 s hover: {energy.MC['P_h'] * 120 / 3600:.2f} Wh")
-print(f"Transition of LC1 (included): {energy.LC['E_tr'] / 3600:.2f} Wh")
+print("\nExpected:")
+print(f"  MC1 hover power {energy.MC['P_h']:.1f} W; after 120 s {energy.MC['P_h'] * 120 / 3600:.2f} Wh, all in 'hover'")
+print(f"  LC1 hover power {energy.LC['P_h']:.1f} W; wing power at 15.5 m/s {energy.lc_wing_power(energy.LC, 15.5):.1f} W")
+print(f"  LC1 one transition: {energy.LC['E_tr'] / 3600:.2f} Wh in 'trans'")
+print("  used = hover + rotor + wing + trans for both")

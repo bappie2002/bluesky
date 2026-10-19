@@ -7,7 +7,7 @@ import bluesky as bs
 
 bs.init(mode="sim", detached=True)
 for cmd in ["DT 0.5", "PLUGINS LOAD ENERGY", "PLUGINS LOAD FLIGHTLOG", "PLUGINS LOAD ARRIVALS",
-            "FLIGHTLOG together", "ARRIVALS 120 300 1"]:
+            "FLIGHTLOG together TRACE", "ARRIVALS 120 300 1"]:
     bs.stack.stack(cmd)
 bs.sim.step()
 while bs.sim.simt < 400:
@@ -17,8 +17,19 @@ for acid in list(bs.traf.id):        # until the VPMS plugin lands them: delete 
     bs.stack.stack(f"DEL {acid}")
 bs.sim.step()
 
-rows = list(csv.DictReader(open("output/flights_together.csv")))
-print(f"{n} drones flown, {len(rows)} lines in the log (must be equal)")
-for r in rows[:5]:
-    print(f"  {r['id']}: {float(r['flight_time']):5.0f} s, {float(r['energy_wh']):5.2f} Wh, "
-          f"SoC {float(r['soc_start']):.3f} -> {float(r['soc_end']):.3f}")
+folder = "output/together"
+data = {k: list(csv.DictReader(open(f"{folder}/{k}.csv"))) for k in ["flights", "events", "trace"]}
+print(f"{n} drones flown, {len(data['flights'])} lines in flights.csv (must be equal)")
+for k, rows in data.items():
+    print(f"  {k}.csv: {len(rows):5d} lines, {os.path.getsize(f'{folder}/{k}.csv') / 1e3:6.1f} kB")
+
+print("\nPer configuration (mean per drone)")
+print(f"  {'':<4}{'n':>3}{'time s':>8}{'Wh':>7}{'Wh/min':>8}{'hover%':>8}{'SoC end':>9}")
+for cfg in ["MC", "LC"]:
+    rows = [r for r in data["flights"] if r["config"] == cfg]
+    mean = lambda c: sum(float(r[c]) for r in rows) / len(rows)
+    print(f"  {cfg:<4}{len(rows):3d}{mean('flight_time'):8.0f}{mean('energy_wh'):7.2f}"
+          f"{60 * mean('energy_wh') / mean('flight_time'):8.2f}"
+          f"{100 * mean('t_hover') / mean('flight_time'):8.0f}{mean('soc_end'):9.3f}")
+print("\nExpected: 7 = 7; MC uses more Wh per minute than LC (rotors vs wing); hover 0% (no holding yet).")
+print(f"For figures: python analysis/run_report.py <path to bluesky>/{folder}  (from the experimenten folder)")

@@ -2,6 +2,8 @@
 
 Every second:  energy used = P(configuration, airspeed) x dt,
 and that energy is subtracted from the battery.
+Per drone it also keeps the power right now, the flight mode (hover, rotor,
+wing) and how much energy went into each mode; FLIGHTLOG writes these out.
 Formulas and parameter choices: experimenten/config/Energiemodel_uitleg.docx
 """
 import numpy as np
@@ -13,6 +15,13 @@ from bluesky import core, stack, traf
 RHO = 1.225   # air density (kg/m3)
 G = 9.81      # gravity (m/s2)
 DT = 1.0      # update interval of this plugin (s)
+HOVER_SPEED = 0.5   # m/s: below this airspeed a drone counts as hovering
+
+# Flight modes, numbered 0, 1, 2 (also used by FLIGHTLOG)
+#   hover: airspeed below HOVER_SPEED
+#   rotor: moving on the rotors (multicopter forward flight, Lift+Cruise below stall)
+#   wing:  Lift+Cruise carried by its wing
+MODES = ["hover", "rotor", "wing"]
 
 # BlueSky aircraft type that stands for each configuration (for its flight
 # performance only; the energy comes from this plugin).
@@ -126,13 +135,22 @@ class Energy(core.Entity):
             self.is_lc = np.array([], dtype=bool)    # True = Lift+Cruise
             self.on_wing = np.array([], dtype=bool)  # Lift+Cruise currently on its wing
             self.soc = np.array([])                  # state of charge, 1.0 = full
+            self.soc_start = np.array([])            # state of charge at creation (or as set by SOC)
             self.used_wh = np.array([])              # energy used since creation (Wh)
+            self.power = np.array([])                # power now (W), without transitions
+            self.mode = np.array([], dtype=int)      # 0 hover, 1 rotor, 2 wing (see MODES)
+            self.wh_hover = np.array([])             # energy used per mode (Wh)
+            self.wh_rotor = np.array([])
+            self.wh_wing = np.array([])
+            self.wh_trans = np.array([])             # energy of wing -> rotor transitions (Wh)
+            self.n_trans = np.array([], dtype=int)   # number of those transitions
 
     def create(self, n=1):
         super().create(n)
         self.is_lc[-n:] = [t.upper() in LC_TYPES for t in traf.type[-n:]]
         self.on_wing[-n:] = self.is_lc[-n:] & (traf.tas[-n:] >= LC["v_stall"])
         self.soc[-n:] = 1.0
+        self.soc_start[-n:] = 1.0
         self.used_wh[-n:] = 0.0
 
     @core.timed_function(name="energy", dt=DT)
@@ -140,19 +158,26 @@ class Energy(core.Entity):
         v = traf.tas                                      # true airspeed (m/s)
         wing = self.is_lc & (v >= LC["v_stall"])          # L+C fast enough for its wing
         p_lc = np.where(wing, lc_wing_power(LC, v), lc_rotor_power(LC, v))
-        power = np.where(self.is_lc, p_lc, mc_power(MC, v))   # W per drone
+        self.power = np.where(self.is_lc, p_lc, mc_power(MC, v))      # W per drone
+        self.mode = np.where(wing, 2, np.where(v < HOVER_SPEED, 0, 1))
 
-        energy = power * dt                               # J used this step
-        energy += np.where(self.on_wing & ~wing, LC["E_tr"], 0.0)  # (9) just left the wing
+        e_flight = self.power * dt / 3600                             # Wh this step
+        e_trans = np.where(self.on_wing & ~wing, LC["E_tr"], 0.0) / 3600   # (9) just left the wing
         self.on_wing = wing
 
-        capacity = np.where(self.is_lc, LC["battery_wh"], MC["battery_wh"]) * 3600   # J
-        self.soc -= energy / capacity
-        self.used_wh += energy / 3600
+        self.wh_hover += np.where(self.mode == 0, e_flight, 0.0)
+        self.wh_rotor += np.where(self.mode == 1, e_flight, 0.0)
+        self.wh_wing += np.where(self.mode == 2, e_flight, 0.0)
+        self.wh_trans += e_trans
+        self.n_trans += e_trans > 0
+
+        used = e_flight + e_trans
+        self.used_wh += used
+        self.soc -= used / np.where(self.is_lc, LC["battery_wh"], MC["battery_wh"])
 
     @stack.command(name="SOC")
     def soc_command(self, acid: "acid", value: float = -1.0):
         """SOC acid [value]: show the state of charge of a drone, or set it (0-1)."""
         if value >= 0:
-            self.soc[acid] = value
+            self.soc[acid] = self.soc_start[acid] = value
         return True, f"{traf.id[acid]}: SoC {self.soc[acid]:.4f}, used {self.used_wh[acid]:.2f} Wh"

@@ -5,8 +5,8 @@ in deze map (`bluesky/plugins/thesis/`); je hoeft niets in te stellen.
 
 | Plugin | Bestand | Wat hij doet |
 |---|---|---|
-| ENERGY | `energy.py` | Houdt per drone de accu bij: elke seconde energie = vermogen × tijd. |
-| FLIGHTLOG | `flightlog.py` | Schrijft per drone één regel in een CSV-bestand als de drone verdwijnt. |
+| ENERGY | `energy.py` | Houdt per drone de accu bij: elke seconde energie = vermogen × tijd, ook per vliegmodus. |
+| FLIGHTLOG | `flightlog.py` | Schrijft drie CSV-bestanden per run: per drone, per gebeurtenis en (optioneel) per seconde. |
 | ARRIVALS | `arrivals.py` | Maakt synthetisch aankomstverkeer aan bij de gates. |
 
 ## Snel proberen
@@ -39,14 +39,25 @@ wijziging alle vier opnieuw.
   beweegt; het energieverbruik komt uit deze plugin.
 - Parameters staan bovenaan het bestand, de formules (1) t/m (9) eronder met uitleg.
   Onderbouwing: `experimenten/config/aannames.md` en `Energiemodel_uitleg.docx`.
+- Houdt per drone ook bij: vermogen nu (W), vliegmodus en energie per modus.
+  Modi: `hover` (onder 0,5 m/s), `rotor` (vooruit op de rotors: multicopter, of L+C onder
+  overtreksnelheid), `wing` (L+C op de vleugel). Transities apart in `wh_trans`.
 - Commando: `SOC MC1` toont de accu van MC1, `SOC MC1 0.6` zet hem op 60%.
 
 ### FLIGHTLOG
-- Kolommen: id, type, spawn- en eindtijd, vliegtijd, energie (Wh), SoC begin en eind,
-  hovertijd, kleinste afstand tot een andere drone, tijd in loss of separation.
-- De regel wordt geschreven als de drone verwijderd wordt (straks: na de landing).
-- Commando: `FLIGHTLOG naam` start het bestand `output/flights_naam.csv`.
+- Commando: `FLIGHTLOG naam` schrijft naar de map `output/naam/`:
+  - `flights.csv`: één regel per drone, bij verwijderen (straks: na de landing).
+    Tijden, SoC begin en eind, energie totaal en per modus (`wh_hover`, `wh_rotor`,
+    `wh_wing`, `wh_trans`), tijd per modus, aantal transities, kleinste afstand, tijd in LoS.
+  - `events.csv`: één regel per gebeurtenis: `spawn`, wissel van modus (event = nieuwe
+    modus, info = oude), `los_start`/`los_end` (info = de andere drone), `end`. Met de toestand
+    op dat moment. Hieruit is de tijdlijn van elke drone terug te bouwen.
+- `FLIGHTLOG naam TRACE` schrijft daarnaast `trace.csv`: elke drone elke seconde
+  (positie, snelheid, modus, vermogen, energie, SoC). Groot; alleen voor figuren en debuggen.
+- Andere plugins kunnen eigen events toevoegen (straks VPMS: `arc_in`, `direct_to`, `touchdown`).
 - Delay komt erbij zodra de VPMS-plugin de vroegst mogelijke landingstijd geeft.
+- Figuren en samenvatting: `python analysis/run_report.py ../bluesky/output/naam`
+  (vanuit de map `experimenten`).
 
 ### ARRIVALS
 - Trekt vooraf de complete aankomstlijst uit één seed: tijd, gate, type en SoC.
