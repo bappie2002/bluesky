@@ -37,7 +37,11 @@ wijziging alle vier opnieuw.
 - Welke drone welke configuratie is, volgt uit het BlueSky-type: `AMZN` = Lift+Cruise,
   al het andere (bijv. `M200`) = multicopter. Het type bepaalt alleen hoe de drone
   beweegt; het energieverbruik komt uit deze plugin.
-- Parameters staan bovenaan het bestand, de formules (1) t/m (9) eronder met uitleg.
+- **Het energiemodel staat niet in dit bestand.** Het heeft één plek, in de map `experimenten`:
+  formules in `experimenten/plugins/energy_model.py`, waarden in `experimenten/config/vehicles.py`.
+  `energy.py` importeert die en past ze elke seconde toe op elke drone.
+  De map `experimenten` moet naast `bluesky` staan (in `afstuderen/`), of zet de
+  omgevingsvariabele `EXPERIMENTEN` op het pad (bijv. op een cluster).
   Onderbouwing: `experimenten/config/aannames.md` en `Energiemodel_uitleg.docx`.
 - Houdt per drone ook bij: vermogen nu (W), vliegmodus en energie per modus.
   Modi: `hover` (onder 0,5 m/s), `rotor` (vooruit op de rotors: multicopter, of L+C onder
@@ -73,8 +77,9 @@ wijziging alle vier opnieuw.
 ## Goed om te weten
 - Tijdstap: in de tests staat `DT 0.5` (standaard 0,05 s). Dat is 10× sneller.
 - BlueSky start niet zonder verkeer; `ARRIVALS` stuurt daarom zelf `OP`.
-- In `experimenten/plugins/energy.py` staat hetzelfde energiemodel, voor de
-  Excel en de analyses. Verander je een parameter, doe dat dan op beide plekken.
+- Een parameter van het energiemodel verander je alleen in `experimenten/config/vehicles.py`;
+  de volgende simulatie gebruikt hem meteen. Draai daarna `check_excel.py` als je de Excel
+  gelijk wilt houden.
 
 ## Volgende plugin
 VPMS: gates, arcs, merge point en pad als routes, plus het landen (drone verwijderen
