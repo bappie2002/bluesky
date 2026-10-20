@@ -47,7 +47,7 @@ trace = list(csv.DictReader(open("output/test/trace.csv")))
 print(f"\noutput/test/trace.csv: {len(trace)} lines (3 drones x 120 s, so about 360)")
 
 print("\nExpected:")
-print("  MC1: 8.78 Wh, all hover (t_hover 120 s), no events except spawn and end")
+print("  MC1: 9.94 Wh, all hover (t_hover 120 s), no events except spawn and end")  # 298.1 W x 120 s (step 1a, 20-10)
 print("  MC2: soc_start 0.5; hover until 60 s, then rotor; min_sep 13.7 m; los_end soon after 60 s")
 print(f"  LC1: wing until 60 s, then rotor and hover; n_trans 1, wh_trans {energy.E_TRANS_J / 3600:.2f} Wh")
 print("  events: los_start for MC1 and MC2 at the start, los_end for both after 60 s")
