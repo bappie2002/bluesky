@@ -5,8 +5,16 @@ configuration and state of charge of every drone. The same seed gives the
 same list, so every case of the experiment gets exactly the same traffic.
 During the run, each drone is created at its gate when its time has come.
 """
+import os
+import sys
 import numpy as np
 from bluesky import core, stack, sim
+
+# The speeds come from the energy model (one place for all values), see ENERGY.
+EXPERIMENTEN = os.environ.get("EXPERIMENTEN", os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "experimenten"))
+sys.path.insert(0, os.path.join(EXPERIMENTEN, "config"))
+from vehicles import GENERIC_MC as MC, GENERIC_LC as LC   # noqa: E402
 
 # =============================================================================
 # PARAMETERS (geometry and SoC range still to be decided: placeholders)
@@ -18,7 +26,11 @@ ALT = 60.0                       # m: arrival altitude
 
 SHARE_LC = 0.5                   # share of Lift+Cruise drones (base case 50/50)
 TYPE = {"MC": "M200", "LC": "AMZN"}     # BlueSky types (must match ENERGY plugin)
-SPEED = {"MC": 8.0, "LC": 14.2}         # m/s at the gate (MC ~ best endurance, LC = 1.2 x stall)
+# Speed at the gate (m/s):
+#   MC: 8 m/s, but never faster than its best-range speed v_range (9.0 m/s): the
+#       multicopter power curve is only valid up to there (decision 21-10-2026)
+#   LC: the arc (waiting) speed v_arc = 1.05 x stall speed (12.4 m/s)
+SPEED = {"MC": min(8.0, MC.v_range), "LC": LC.v_arc}
 SOC_RANGE = (0.40, 0.80)         # state of charge at the gate, drawn uniformly
 
 
