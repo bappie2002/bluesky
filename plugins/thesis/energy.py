@@ -30,10 +30,17 @@ LC_TYPES = {"AMZN"}   # BlueSky types that are Lift+Cruise; all other types are 
                       # (the type sets the flight performance only; the energy comes from the model)
 E_TRANS_J, T_TRANS = LC.transition("to_rotor")   # one wing -> rotor transition: energy (J), duration (s)
 P_TRANS = E_TRANS_J / T_TRANS                      # mean power during that transition (W)
-# Transition (decision 22-10-2026): when a Lift+Cruise leaves its wing, it uses P_TRANS
-# for T_TRANS seconds INSTEAD of the rotor curve. Mathur's transition energy already
-# contains the deceleration from stall to rotor flight, so charging the rotor curve
-# (or the plateau, A8) at the same time would count that deceleration twice.
+E_TRANS_WING_J, T_TRANS_WING = LC.transition("to_wing")   # one rotor -> wing transition (J, s)
+P_TRANS_WING = E_TRANS_WING_J / T_TRANS_WING               # mean power during that transition (W)
+# Transitions (decisions 22-10 and 27-10-2026). A transition is a fixed block of energy and time
+# from Mathur et al. (2025), Table 9, scaled with the hover power. During the block the drone
+# uses the block power INSTEAD of the rotor or wing curve, because Mathur's transition already
+# contains the change of speed (otherwise that speed change would be counted twice).
+#   wing -> rotor: starts when a Lift+Cruise leaves its wing (airspeed below stall); 10 s.
+#   rotor -> wing: starts when a Lift+Cruise below stall is told to fly at or above stall
+#                  (its target airspeed), so the block also covers the acceleration; 15 s.
+# A new transition replaces a block that is still running.
+TO_ROTOR, TO_WING = 1, 2
 
 
 def init_plugin():
@@ -50,14 +57,15 @@ class Energy(core.Entity):
             self.soc = np.array([])                  # state of charge, 1.0 = full
             self.soc_start = np.array([])            # state of charge at creation (or as set by SOC)
             self.used_wh = np.array([])              # energy used since creation (Wh)
-            self.power = np.array([])                # power now (W), P_TRANS during a transition
+            self.power = np.array([])                # power now (W), block power during a transition
             self.trans_left = np.array([])           # seconds left of the current transition
+            self.trans_kind = np.array([], dtype=int)  # 0 none, TO_ROTOR or TO_WING
             self.mode = np.array([], dtype=int)      # 0 hover, 1 rotor, 2 wing (see MODES)
             self.wh_hover = np.array([])             # energy used per mode (Wh)
             self.wh_rotor = np.array([])
             self.wh_wing = np.array([])
-            self.wh_trans = np.array([])             # energy of wing -> rotor transitions (Wh)
-            self.n_trans = np.array([], dtype=int)   # number of those transitions
+            self.wh_trans = np.array([])             # energy of transitions, both directions (Wh)
+            self.n_trans = np.array([], dtype=int)   # number of transitions, both directions
 
     def create(self, n=1):
         super().create(n)
@@ -74,22 +82,26 @@ class Energy(core.Entity):
         self.mode = np.where(self.is_lc, mode_lc, mode_mc)
         wing = self.mode == 2
 
-        # transition: starts when a Lift+Cruise leaves its wing, stops early if it returns to it
-        left_wing = self.on_wing & ~wing
-        self.trans_left = np.where(wing, 0.0, np.where(left_wing, T_TRANS, self.trans_left))
+        # transitions: a block of fixed power and duration (see the top of this file)
+        to_rotor = self.on_wing & ~wing                                  # just left the wing
+        to_wing = (self.is_lc & ~wing & (traf.aporasas.tas >= LC.v_stall)
+                   & ~((self.trans_kind == TO_WING) & (self.trans_left > 0)))   # told to fly on the wing
+        self.trans_left = np.where(to_rotor, T_TRANS, np.where(to_wing, T_TRANS_WING, self.trans_left))
+        self.trans_kind = np.where(to_rotor, TO_ROTOR, np.where(to_wing, TO_WING, self.trans_kind))
+        p_block = np.where(self.trans_kind == TO_WING, P_TRANS_WING, P_TRANS)
         t_trans = np.minimum(dt, self.trans_left)                     # s of this step in transition
         self.trans_left = np.maximum(self.trans_left - dt, 0.0)
         self.on_wing = wing
 
         e_flight = self.power * (dt - t_trans) / 3600                 # Wh this step, outside transition
-        e_trans = P_TRANS * t_trans / 3600                            # Wh this step, in transition
-        self.power = np.where(t_trans > 0, P_TRANS, self.power)
+        e_trans = p_block * t_trans / 3600                            # Wh this step, in transition
+        self.power = np.where(t_trans > 0, p_block, self.power)
 
         self.wh_hover += np.where(self.mode == 0, e_flight, 0.0)
         self.wh_rotor += np.where(self.mode == 1, e_flight, 0.0)
         self.wh_wing += np.where(self.mode == 2, e_flight, 0.0)
         self.wh_trans += e_trans
-        self.n_trans += left_wing
+        self.n_trans += to_rotor | to_wing
 
         used = e_flight + e_trans
         self.used_wh += used

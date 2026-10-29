@@ -19,8 +19,8 @@ from bluesky import core, stack, traf, sim
 # PARAMETERS
 # =============================================================================
 DT = 1.0            # update interval (s); events are therefore accurate to 1 s
-SEP_H = 30.0        # m: horizontal separation minimum   (to be decided)
-SEP_V = 15.0        # m: vertical separation minimum     (to be decided)
+SEP_H = 32.0        # m: horizontal separation minimum (Metropolis II, decision 23-10-2026)
+SEP_V = 7.62        # m: vertical separation minimum (25 ft, Metropolis II)
 FOLDER = "output"   # parent folder of the run folders
 
 MODES = ["hover", "rotor", "wing"]          # same numbering as in ENERGY

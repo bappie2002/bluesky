@@ -1,9 +1,0 @@
-# Demo: ENERGY + FLIGHTLOG + ARRIVALS. 60 drones per hour for 10 minutes.
-# Drones fly straight to the pad (temporary, until the VPMS plugin exists).
-00:00:00.00>PLUGINS LOAD ENERGY
-00:00:00.00>PLUGINS LOAD FLIGHTLOG
-00:00:00.00>PLUGINS LOAD ARRIVALS
-00:00:00.00>FLIGHTLOG demo TRACE
-00:00:00.00>PAN 52.0 4.0
-00:00:00.00>ZOOM 20
-00:00:00.00>ARRIVALS 60 600 1

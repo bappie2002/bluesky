@@ -36,8 +36,14 @@ show("After 60 s")
 bs.stack.stack("LC1 SPD 0")       # Lift+Cruise slows down to hover
 run(60)
 show("After 120 s")
+bs.stack.stack("LC1 SPD 30")      # Lift+Cruise speeds up again and goes back on its wing
+run(60)
+show("After 180 s")
 print("\nExpected:")
 print(f"  MC1 hover power {energy.MC.p_hover:.1f} W; after 120 s {energy.MC.p_hover * 120 / 3600:.2f} Wh, all in 'hover'")
 print(f"  LC1 hover power {energy.LC.p_hover:.1f} W; wing power at 15.5 m/s {energy.LC.wing_power(15.5):.1f} W")
-print(f"  LC1 one transition: {energy.E_TRANS_J / 3600:.2f} Wh in 'trans'")
+print(f"  LC1 after 120 s: one transition (wing -> rotor) {energy.E_TRANS_J / 3600:.2f} Wh in 'trans'")
+print(f"  LC1 after 180 s: plus rotor -> wing {energy.E_TRANS_WING_J / 3600:.2f} Wh, "
+      f"total {(energy.E_TRANS_J + energy.E_TRANS_WING_J) / 3600:.2f} Wh in 'trans', n_trans 2: "
+      f"{int(plugin.n_trans[1])}")
 print("  used = hover + rotor + wing + trans for both")
