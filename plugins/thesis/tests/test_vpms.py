@@ -27,6 +27,10 @@ print(f"Variant {variant}, prediction error {eta} %, {demand} drones/h: radius M
       f"L+C {V.arc_radius(True):.0f} m, gates at {V.gate_distance():.0f} m")
 
 los_pairs, overshoot, max_radial, trans_on_arc, spawned = set(), 0.0, 0.0, set(), set()
+sped_up, v_max_seen = set(), 0.0       # L+C leaders that sped up for an L+C behind them (decision 03-11-2026)
+print(f"Entry offset {V.ENTRY_OFFSET:.0f} m per side (needed {V.entry_offset_min():.1f} m); hand-over MC-MC "
+      f"{V.handover_time(False, False):.1f} s, L+C-L+C {V.handover_time(True, True):.1f} s, "
+      f"L+C behind MC {V.handover_time(False, True):.1f} s")
 while bs.sim.simt < 4000 and not sc.done:
     bs.sim.step()
     n = bs.traf.ntraf
@@ -49,7 +53,7 @@ while bs.sim.simt < 4000 and not sc.done:
     for i in range(n):
         if vp.state[i] == V.ARC:
             err = np.hypot(x[i], y[i]) - V.arc_radius(vp.is_lc[i])        # + outside, - inside
-            prog = (np.degrees(np.arctan2(x[i], y[i])) - V.GATE_BEARINGS[vp.gate[i]]) % 360
+            prog = (np.degrees(np.arctan2(x[i], y[i])) - V.arc_start_bearing(vp.gate[i], vp.is_lc[i])) % 360
             prog = 0.0 if prog > 300 else prog
             if prog > 1.0:
                 overshoot = min(overshoot, err)                        # inside the circle: overshoot
@@ -57,6 +61,9 @@ while bs.sim.simt < 4000 and not sc.done:
                 max_radial = max(max_radial, abs(err))                 # once on the arc
             if vp.is_lc[i] and bs.traf.tas[i] < 11.8:
                 trans_on_arc.add(bs.traf.id[i])
+        if vp.speedup[i]:
+            sped_up.add(bs.traf.id[i])
+            v_max_seen = max(v_max_seen, float(bs.traf.tas[i]))
 
 merge = np.diff([t for t, _ in vp.merges]); touch = np.diff([t for t, _ in vp.touchdowns])
 print(f"\nSimulated {bs.sim.simt:.0f} s; {len(spawned)} drones created, "
@@ -66,6 +73,8 @@ print(f"Touchdown intervals:    min {touch.min():.1f} s  (one at a time: >= 33.5
 print(f"Arcs: overshoot to the inside {max(-overshoot, 0.0):.1f} m; largest deviation after the first 20 deg {max_radial:.1f} m")
 print(f"Losses of separation (32 m and 7.62 m): {len(los_pairs)} pairs {sorted(los_pairs)[:6]}")
 print(f"L+C below stall on an arc (behind a slower or holding drone): {len(trans_on_arc)} {sorted(trans_on_arc)[:6]}")
+print(f"L+C leaders that sped up to restore 64 m: {len(sped_up)} {sorted(sped_up)[:6]}; fastest {v_max_seen:.1f} m/s "
+      f"(at most {V.V_LC_MAX} m/s)")
 
 holds = sum(1 for t, _ in vp.merges)  # placeholder to keep names short
 import csv

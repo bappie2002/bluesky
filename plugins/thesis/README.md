@@ -70,7 +70,8 @@ wijziging alle vier opnieuw.
   (vanuit de map `experimenten`).
 
 ### VPMS
-- Pad op 52,0 N 4,0 O; merge point 40 m erboven. Vier gates op de hoogte van hun boog (100 of 90 m), 480 m van het pad (buitenste boog + 100 m, `GATE_MARGIN`); de daling vanuit het transit-luchtruim gebeurt vóór de gate (besluit 29-10). Minimaal `T_GATE` = 10 s tussen twee drones bij dezelfde gate (het kinematische minimum van 9,7 s, naar boven afgerond) (`VPMS GATE s`).
+- Pad op 52,0 N 4,0 O; merge point 40 m erboven. Vier gates op de hoogte van hun boog (100 of 90 m), 480 m van het pad (buitenste boog + 100 m, `GATE_MARGIN`); de daling vanuit het transit-luchtruim gebeurt vóór de gate (besluit 29-10).
+- Ingangspunten (besluit 03-11): bij gescheiden bogen heeft elke gate er twee, 25 m (`ENTRY_OFFSET`) aan weerszijden van de radiale lijn, dus 50 m uit elkaar: de MC tegen de klok in, de L+C met de klok mee (de kant waarheen hij zijn boog op draait). Parallelle aanvliegstukken; de MC-boog begint daardoor 8,3° vóór, de L+C-boog 3,8° na de gate-richting (`arc_start_bearing`). Minimaal nodig: 18,4 m per kant (`entry_offset_min()`), omdat het directe stuk van een meteen vrijgegeven L+C naar het merge point convergeert. `VPMS OFFSET m`; `VPMS OFFSET 0` geeft het oude ontwerp met één ingangspunt (dan zou 9,7 s tussen MC en L+C nodig zijn, `single_entry_time()`). Gedeelde bogen: één ingangspunt per gate.
 - Per gate een boog van 150° met de klok mee, op 100 m (gates 0 en 2) of 90 m (gates 1 en 3).
 - Straal = 2 × 40 s × wachtsnelheid / 150°: `VPMS SHARED` één boog per gate (380 m, L+C bepaalt),
   `VPMS SPEED` per gate een MC-boog (174 m) en een L+C-boog (380 m). `VPMS SHOW` tekent ze.
@@ -84,8 +85,17 @@ wijziging alle vier opnieuw.
   geen regel in de rijstrook (`ARC_SPACING`, `VPMS DISTANCE`; `VPMS TIME` geeft de oude regel voor de
   vergelijking). Een drone die de boog verlaat blijft voorganger tot hij 37 m binnen de boog is, en een
   volger kan altijd 64 m vóór het eind van de boog stoppen. L+C achter een MC: van de vleugel af.
+- 64 m herstellen na een krappe overdracht (besluit 03-11, structuurregel, geldt in alle cases): een MC-volger valt terug
+  (vliegt langzamer); een L+C kan dat niet (vliegt net boven stall), dus de L+C vóór hem loopt uit tot hoogstens
+  `V_LC_MAX` = 16,7 m/s (kruissnelheid DeltaQuad Pro, ijkpunt van het vleugelmodel) tot de 64 m terug is; de volger
+  vliegt dan niet sneller dan zijn voorganger (`lane_speed`). Heeft de voorganger geen ruimte, dan valt de volger
+  terug (en gaat van zijn vleugel af). Een vertrekkende voorganger remt een volger alleen af zolang die hem inloopt.
+  Events `speedup` en `speedup_end`.
 - Geen wachten vóór de gate (optie B, besluit 29-10): drones komen op hun getrokken tijd binnen; drukte
-  wordt in de structuur opgevangen.
+  wordt in de structuur opgevangen. Overdracht (besluit 03-11): het transitminimum per ingangspunt, `handover_time()`:
+  de vorige drone zit minstens 32 m voor; een snellere volger (L+C achter MC, gedeelde bogen) ongeveer 40 m, want hij
+  loopt in terwijl hij afremt. Plus 0,5 s (een drone wordt bij de eerstvolgende stap gemaakt). MC-MC 4,0 s, L+C-L+C 3,1 s,
+  L+C achter MC 4,9 s, MC achter L+C 3,1 s.
 - Harde minima: nooit binnen 7,62 m boven de drone eronder (ook boven een drone op het platform);
   het merge point is pas vrij als de drone eronder 7,62 m lager is; anders wacht de volgende op 35 m.
 - FCFS: vrijgegeven in volgorde van binnenkomst op de boog, ten minste 40 s na de vorige bij het merge
@@ -97,7 +107,7 @@ wijziging alle vier opnieuw.
 - Wind wordt in dit onderzoek niet gesimuleerd (besluit 27-10). VPMS kan het wel (hoveren = neus in de
   wind, positie vastgehouden), voor later onderzoek.
 - Zet BlueSky's CAS/Mach-grens op 0,01 m/s (anders leest BlueSky 0,1-2 m/s als Mach).
-- Events: `arc_in`, `hold`, `direct_to`, `merge`, `touchdown`.
+- Events: `arc_in`, `hold`, `direct_to`, `merge`, `touchdown`, `speedup`, `speedup_end`.
 
 ### TRAFFIC
 - `TRAFFIC vraag seed [fout_%] [BASE|LONG] [inloop_s] [meet_s]`; standaard 3600 s inloop + 3600 s meten.
@@ -105,7 +115,8 @@ wijziging alle vier opnieuw.
 - Voorspellingsfout per drone: normaal verdeeld, standaardafwijking fout_% (niveaus 0, 5, 10, 20%; eigen aanname).
   Hoofdvergelijking zonder fout; separatie-analyse met alle niveaus.
 - Eigen random-stroom per grootheid uit één seed: alle varianten krijgen dezelfde drones.
-- Wacht een drone voor de gate (boog nog niet vrij), dan kost dat energie op zijn wachtvermogen.
+- Overdracht per ingangspunt (besluit 03-11): een drone die dichter bij zijn voorganger getrokken wordt dan
+  `handover_time()` (VPMS), schuift op. Bij gescheiden bogen geldt dat per type (eigen ingangspunt), bij gedeelde per gate.
 - Stopt (HOLD) als alle drones uit het meetvenster geland zijn. Events: `measured` of `runin`.
 - `TRAFFIC BATCH` schrijft de hoofdvergelijking: `scenario/thesis/batch_shared.scn` en `batch_speed.scn`
   (5 drukteniveaus × 100 seeds = 500 runs per variant).
@@ -114,9 +125,12 @@ wijziging alle vier opnieuw.
 - Beide nog niet getest in BlueSky's batch-modus.
 
 ## Nog open
-- Afstand gate tot buitenste boog (`GATE_MARGIN` = 100 m, eigen keuze), MC-snelheid op het entry-been (nu 9,0 m/s).
-- Waar drones wachten buiten de structuur.
-- De L+C stopt in 83 m (Mathur) via een vaste vertraging.
+- Kleinste werkbare afstand in een lane (40 / 48 / 64 m), test T6.
+- Snelheidsvenster van de L+C voor de sequencer (energiekeuzes; los van de 16,7 m/s van de herstelregel).
+- De L+C stopt in 83 m (Mathur) via een vaste vertraging; het remmen duurt dan 13,4 s, het transitieblok 10 s.
+
+Besloten sinds 29-10: gate-afstand (480 m), geen wachten vóór de gate, MC-snelheid op het aanvliegstuk (9,0 m/s),
+twee ingangspunten 50 m uit elkaar, overdracht op het transitminimum, uitlopen van de L+C (03-11).
 
 ## Goed om te weten
 - Tijdstap: in de tests staat `DT 0.5` (standaard 0,05 s). Dat is 10× sneller.

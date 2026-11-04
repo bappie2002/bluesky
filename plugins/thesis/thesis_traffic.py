@@ -19,12 +19,15 @@ Random numbers: every quantity has its own stream from one seed. The drones ther
 depend only on (demand, seed): every mechanism, variant, R preset and error level gets
 exactly the same drones (common random numbers).
 
-Arrivals at the gate (decision 29-10-2026, option B): every drone passes its gate at its drawn
-time; there is no waiting before the gate, because what happens in the transit airspace is
-outside the model. The only rule at the hand-over from the transit airspace: at least T_GATE
-(VPMS, 10 s) between two drones at the same gate; a drone drawn closer is moved later by the
-generator (draw). Bunches of arrivals are absorbed inside the structure: slower on the arc,
-and hover at its end when not yet cleared.
+Arrivals at the gate (decision 29-10-2026, option B): every drone passes its entry point at its
+drawn time; there is no waiting before the gate, because what happens in the transit airspace is
+outside the model. The only rule at the hand-over (decision 03-11-2026): the transit minimum. When
+a drone passes its entry point, the previous drone at that point is at least SEP_H (32 m) ahead,
+more if the follower is faster (VPMS handover_time: MC behind MC 4.0 s, L+C behind L+C 3.1 s,
+L+C behind MC 4.9 s, MC behind L+C 3.1 s, each including one update step). A drone drawn closer
+is moved later by the generator (draw). In the speed variant an MC and an L+C use different entry
+points (50 m apart), so there is no rule between them. Bunches of arrivals are absorbed inside the
+structure: the lane rules restore 64 m, drones fly slower on the arc and hover at its end.
 
 Needs VPMS (and ENERGY for the state of charge). Command:
   TRAFFIC demand seed [eta_err_pct] [pad] [warmup] [measure]
@@ -69,9 +72,11 @@ def plugin(name, cls):
     return None
 
 
-def draw(demand, seed, duration, pad="BASE", eta_pct=0.0, t_gate=0.0):
+def draw(demand, seed, duration, pad="BASE", eta_pct=0.0, entry_key=None, handover=None):
     """All arrivals of one run. Separate random streams per quantity (common random numbers).
-    Hand-over rule: at least t_gate s between two drones at the same gate (later one moved)."""
+    Hand-over rule (decision 03-11-2026): entry_key(gate, is_lc) gives the entry point of a drone,
+    handover(lead_lc, foll_lc) the smallest time (s) behind the previous drone at that point; a drone
+    drawn closer is moved later. Without them (None) there is no rule."""
     rng = {k: np.random.default_rng([seed, n]) for n, k in
            enumerate(["time", "gate", "type", "soc", "pad", "eta"])}
     times, t = [], rng["time"].exponential(3600 / demand)
@@ -81,14 +86,19 @@ def draw(demand, seed, duration, pad="BASE", eta_pct=0.0, t_gate=0.0):
     n = len(times)
     worker = rng["pad"].uniform(*T_WORKER, size=n)
     gate = rng["gate"].integers(4, size=n)
+    is_lc = rng["type"].random(n) < SHARE_LC
     times, last = np.array(times), {}
-    for k in range(n):                                   # hand-over rule at the gate
-        times[k] = max(times[k], last.get(gate[k], -np.inf) + t_gate)
-        last[gate[k]] = times[k]
+    if handover is not None:
+        for k in range(n):                               # hand-over rule per entry point
+            key = entry_key(int(gate[k]), bool(is_lc[k]))
+            if key in last:
+                t_prev, lc_prev = last[key]
+                times[k] = max(times[k], t_prev + handover(lc_prev, bool(is_lc[k])))
+            last[key] = (times[k], bool(is_lc[k]))
     plan = dict(
         time=times,
         gate=gate,
-        is_lc=rng["type"].random(n) < SHARE_LC,
+        is_lc=is_lc,
         soc=rng["soc"].uniform(*SOC_RANGE, size=n),
         t_pad=np.full(n, T_PAD_LONG) if pad.upper() == "LONG" else T_SETTLE + worker,
         eta_err=np.clip(rng["eta"].standard_normal(n), -3, 3) * eta_pct / 100,
@@ -134,7 +144,7 @@ class Traffic(core.Entity):
         g, lc = int(p["gate"][k]), bool(p["is_lc"][k])
         acid = f"{'LC' if lc else 'MC'}{k + 1:04d}"
         geo = sys.modules[type(vpms).__module__]              # the VPMS module: geometry
-        lat, lon, alt, hdg = geo.gate(g)
+        lat, lon, alt, hdg = geo.gate(g, lc)                  # entry point of this gate and type
         vpms.register(acid, g, lc, sim.simt, float(p["t_pad"][k]), float(p["eta_err"][k]))
         traf.cre(acid, TYPE[lc], lat, lon, hdg, alt, vtas2cas(geo.V_ENTRY[int(lc)], alt))
         wait = sim.simt - (self.t0 + p["time"][k])
@@ -167,13 +177,17 @@ class Traffic(core.Entity):
         demand = float(demand)
         self.warmup, self.measure = warmup, measure
         vpms = plugin("vpms", "Vpms")
-        t_gate = sys.modules[type(vpms).__module__].T_GATE if vpms is not None else 0.0
-        self.plan = draw(demand, int(seed), warmup + measure, pad, eta, t_gate)
+        geo = sys.modules[type(vpms).__module__] if vpms is not None else None
+        self.plan = draw(demand, int(seed), warmup + measure, pad, eta,
+                         geo.entry_key if geo else None, geo.handover_time if geo else None)
         self.t0, self.next, self.waiting, self.measured, self.done = sim.simt, 0, [], set(), False
         stack.stack("OP")
         n, n_lc = len(self.plan["time"]), int(self.plan["is_lc"].sum())
+        rule = (f"hand-over MC-MC {geo.handover_time(False, False):.1f} s, L+C-L+C {geo.handover_time(True, True):.1f} s"
+                + (f", L+C behind MC {geo.handover_time(False, True):.1f} s" if geo.VARIANT == "shared" else "")
+                if geo else "no hand-over rule")
         return True, (f"TRAFFIC: {n} arrivals ({n_lc} L+C) in {warmup + measure:.0f} s, "
-                      f"seed {seed}, prediction error {eta} %, pad {pad}, gate rule {t_gate:.0f} s")
+                      f"seed {seed}, prediction error {eta} %, pad {pad}, {rule}")
 
 
 def write_batch(separation=False, variants=("shared", "speed"), folder="scenario/thesis"):
