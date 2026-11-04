@@ -39,7 +39,10 @@ What a drone does (one state per drone):
           standstill at the end of its arc (A_DECEL) and then hovers (decision 04-11-2026; before, it
           stopped there at once, which BlueSky could only do with its own, higher acceleration)
   DIRECT  cleared: straight to the merge point, descending to 40 m, and decelerating so
-          that it arrives there in hover (an L+C finishes its transition before it)
+          that it arrives there in hover (an L+C finishes its transition before it). It brakes to a
+          standstill on the merge point itself and only then counts as arrived (decision 04-11-2026;
+          before, it counted as arrived within 3 m while it still flew 1.9 m/s, so it arrived about
+          2 s earlier than the sequencer had planned)
   FINAL   vertical descent: 2 m/s down to 5 m, 0.5 m/s below that; never closer than
           SEP_V above the drone below it, also not above a drone that is still on the pad.
           This gives the minimum time between two landings (17.3 s with a pad time of 6 s).
@@ -114,8 +117,9 @@ V_LC_MAX = 15.4               # m/s: an L+C leader speeds up to at most this to 
 A_DECEL = LC.v_arc ** 2 / (2 * 83.0)  # m/s2: L+C stops in 83 m (Mathur transition); also MC
 A_ACC = A_DECEL               # m/s2: speeding up (decision 04-11-2026): BlueSky accelerates and brakes GMC and
                               #    GLC at one rate, ax_max in their type file = A_DECEL (was 2.0, an assumption)
-ARRIVE_R, ARRIVE_V = 0.5, 0.5 # m, m/s: a drone has arrived at the end of its arc when it is within ARRIVE_R of
-                              #    it and slower than ARRIVE_V: a standstill (decision 04-11-2026)
+ARRIVE_R, ARRIVE_V = 0.5, 0.5 # m, m/s: a drone has arrived at the end of its arc, or at the merge point, when it
+                              #    is within ARRIVE_R of it and slower than ARRIVE_V: a standstill on the point
+                              #    itself, as the prediction assumes (decision 04-11-2026)
 V_DESC = (2.0, 0.5)           # m/s final descent above / below H_SLOW (profile P2). 2 m/s is 0.37 (MC) and
                               #    0.32 (L+C) of the induced velocity in hover: below the onset of the vortex
                               #    ring state (about 0.4, Talaeizadeh et al.; Mori et al. saw none at about 0.65)
@@ -158,7 +162,7 @@ def clear_distance():
     the arc height until SEP_H + 5 m inside the arc, then descends at vs (lowest arcs: slowest, worst case)."""
     v_lc = V_ENTRY[1]
     d0 = arc_radius(True) - SEP_H - 5.0                                   # descent starts here
-    vs = min((min(H_ARC) - H_MERGE) / time_to_merge(d0 - 3.0, v_lc), VS_DIRECT_MAX)
+    vs = min((min(H_ARC) - H_MERGE) / time_to_merge(d0, v_lc), VS_DIRECT_MAX)
     return d0 - v_lc * SEP_V / vs                                         # about 278 m
 
 
@@ -595,7 +599,7 @@ class Vpms(core.Entity):
         i = self.next_clearance(idx)
         if i is not None:
             gs = self.cruise_gs(i, -y[i] / dist[i], -x[i] / dist[i])
-            t = time_to_merge(max(dist[i] - 3.0, 0.0), gs)          # merge point reached at 3 m
+            t = time_to_merge(dist[i], gs)                         # to a standstill on the merge point
             dv = max(gs - traf.gs[i], 0.0)                         # speeding up (from a hold: from 0):
             t += dv ** 2 / (2 * A_ACC * max(gs, 0.1))              # time lost against flying at gs all the way
             t_pred = t * (1 + self.eta_err[i])                     # what the sequencer believes
@@ -609,14 +613,15 @@ class Vpms(core.Entity):
         #    the drone below it is less than SEP_V lower (hard minimum, also when the target fails)
         busy_merge = any(self.state[j] == FINAL and traf.alt[j] > H_MERGE - SEP_V for j in idx)
         for i in idx[self.state[idx] == DIRECT]:
-            if dist[i] < 3.0:
+            if dist[i] < ARRIVE_R and traf.gs[i] < ARRIVE_V:          # standstill on the merge point
                 self.state[i] = FINAL
                 self.merges.append((now, traf.id[i]))
                 self.event(i, "merge")
                 self.hover(i, 0.0, 0.0)
                 continue
-            un, ue = -y[i] / dist[i], -x[i] / dist[i]             # unit vector to the merge point
-            stop = 1.0
+            d = max(dist[i], 1e-6)
+            un, ue = -y[i] / d, -x[i] / d                         # unit vector to the merge point
+            stop = 0.0                                            # brake to a standstill on the point itself
             if busy_merge or any(self.state[j] == DIRECT and dist[j] < dist[i] for j in idx if j != i):
                 stop = SEP_H + 3.0     # hard minimum: wait SEP_H from a merge point that is not free
             v = min(self.cruise_gs(i, un, ue), np.sqrt(2 * A_DECEL * max(dist[i] - stop, 0.0)))
@@ -626,7 +631,7 @@ class Vpms(core.Entity):
             if dist[i] > arc_radius(self.is_lc[i]) - SEP_H - 5.0:
                 self.fly(i, alt=H_ARC[self.gate[i] % 2], vs=VS_ENTRY)
             else:
-                t_left = max(time_to_merge(max(dist[i] - 3.0, 0.0), max(traf.gs[i], 1.0)), 1.0)
+                t_left = max(time_to_merge(dist[i], max(traf.gs[i], 1.0)), 1.0)
                 vs = min(max((traf.alt[i] - H_MERGE) / t_left, 0.1), VS_DIRECT_MAX)
                 self.fly(i, alt=H_MERGE, vs=vs)
 

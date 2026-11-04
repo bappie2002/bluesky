@@ -74,12 +74,12 @@ wijziging alle vier opnieuw.
 
 ### VPMS
 - Pad op 52,0 N 4,0 O; merge point 40 m erboven. Vier gates op de hoogte van hun boog (100 of 90 m), 480 m van het pad (buitenste boog + 100 m, `GATE_MARGIN`); de daling vanuit het transit-luchtruim gebeurt vóór de gate (besluit 29-10).
-- Ingangspunten (besluit 03-11): bij gescheiden bogen heeft elke gate er twee, 25 m (`ENTRY_OFFSET`) aan weerszijden van de radiale lijn, dus 50 m uit elkaar: de MC tegen de klok in, de L+C met de klok mee (de kant waarheen hij zijn boog op draait). Parallelle aanvliegstukken; de MC-boog begint daardoor 8,3° vóór, de L+C-boog 3,8° na de gate-richting (`arc_start_bearing`). Minimaal nodig: 18,4 m per kant (`entry_offset_min()`), omdat het directe stuk van een meteen vrijgegeven L+C naar het merge point convergeert. `VPMS OFFSET m`; `VPMS OFFSET 0` geeft het oude ontwerp met één ingangspunt (dan zou 9,7 s tussen MC en L+C nodig zijn, `single_entry_time()`). Gedeelde bogen: één ingangspunt per gate.
+- Ingangspunten (besluit 03-11): bij gescheiden bogen heeft elke gate er twee, 25 m (`ENTRY_OFFSET`) aan weerszijden van de radiale lijn, dus 50 m uit elkaar: de MC tegen de klok in, de L+C met de klok mee (de kant waarheen hij zijn boog op draait). Parallelle aanvliegstukken; de MC-boog begint daardoor 8,3° vóór, de L+C-boog 3,8° na de gate-richting (`arc_start_bearing`). Minimaal nodig: 18,5 m per kant (`entry_offset_min()`), omdat het directe stuk van een meteen vrijgegeven L+C naar het merge point convergeert. `VPMS OFFSET m`; `VPMS OFFSET 0` geeft het oude ontwerp met één ingangspunt (dan zou 9,7 s tussen MC en L+C nodig zijn, `single_entry_time()`). Gedeelde bogen: één ingangspunt per gate.
 - Per gate een boog van 150° met de klok mee, op 100 m (gates 0 en 2) of 90 m (gates 1 en 3).
 - Straal = 2 × 40 s × wachtsnelheid / 150°: `VPMS SHARED` één boog per gate (380 m, L+C bepaalt),
   `VPMS SPEED` per gate een MC-boog (174 m) en een L+C-boog (380 m). `VPMS SHOW` tekent ze.
   `VPMS TARGET 35` zet het doel op 35 s (de straal volgt mee); vóór het verkeer.
-- Per drone: entry → boog → (hover aan het eind) → direct naar het merge point (komt in hover aan)
+- Per drone: entry → boog → (hover aan het eind) → direct naar het merge point (komt in hover aan; telt pas als aangekomen bij stilstand op het merge point zelf, binnen 0,5 m en onder 0,5 m/s, `ARRIVE_R`, `ARRIVE_V`, besluit 04-11)
   → verticaal dalen (2 m/s tot 5 m, dan 0,5 m/s) → platform (2 s + tijd om hem eraf te halen) → weg.
 - Boog volgen: de drone mikt op een punt een vooruitkijkafstand verder op de boog (2 × draaicirkel),
   en begint zijn bocht de boog op op die afstand. Zo schiet hij niet door.
