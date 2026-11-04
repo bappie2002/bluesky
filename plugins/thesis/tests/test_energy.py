@@ -7,8 +7,8 @@ import bluesky as bs
 
 bs.init(mode="sim", detached=True)
 for cmd in ["PLUGINS LOAD ENERGY",
-            "CRE MC1 M200 52.0 4.0 90 300 0",     # multicopter, hovering
-            "CRE LC1 AMZN 52.0 4.05 90 300 30"]:  # Lift+Cruise, 30 kts on its wing
+            "CRE MC1 GMC 52.0 4.0 90 300 0",      # multicopter, hovering
+            "CRE LC1 GLC 52.0 4.05 90 300 30"]:   # Lift+Cruise, 30 kts on its wing (BlueSky: at most 15.4 m/s)
     bs.stack.stack(cmd)
 bs.sim.step()                                      # processes the commands above
 energy = next(m for k, m in sys.modules.items() if k.endswith(".energy"))
@@ -41,7 +41,8 @@ run(60)
 show("After 180 s")
 print("\nExpected:")
 print(f"  MC1 hover power {energy.MC.p_hover:.1f} W; after 120 s {energy.MC.p_hover * 120 / 3600:.2f} Wh, all in 'hover'")
-print(f"  LC1 hover power {energy.LC.p_hover:.1f} W; wing power at 15.5 m/s {energy.LC.wing_power(15.5):.1f} W")
+v_lc = float(bs.traf.tas[1])
+print(f"  LC1 hover power {energy.LC.p_hover:.1f} W; wing power at {v_lc:.1f} m/s {energy.LC.wing_power(v_lc):.1f} W")
 print(f"  LC1 after 120 s: one transition (wing -> rotor) {energy.E_TRANS_J / 3600:.2f} Wh in 'trans'")
 print(f"  LC1 after 180 s: plus rotor -> wing {energy.E_TRANS_WING_J / 3600:.2f} Wh, "
       f"total {(energy.E_TRANS_J + energy.E_TRANS_WING_J) / 3600:.2f} Wh in 'trans', n_trans 2: "

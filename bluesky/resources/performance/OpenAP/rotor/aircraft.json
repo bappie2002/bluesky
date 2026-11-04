@@ -11,7 +11,8 @@
       "va_max": "maximum speed (m/s)",
       "vs_max": "maximum vertical speed (m/s)",
       "h_max": "maximum altitude (m)",
-      "d_range_max": "maximum flight range (km)"
+      "d_range_max": "maximum flight range (km)",
+      "ax_max": "maximum horizontal acceleration (m/s2), optional (thesis, 04-11-2026); default 3.5"
     }
   },
   "EC35": {
@@ -166,6 +167,40 @@
       "h_max": 2500,
       "d_range_max": 5      
    }
+  },
+  "GMC": {
+    "name": "Generic multicopter, MSc thesis (experimenten/config/vehicles.py, GENERIC_MC)",
+    "n_engines": 4,
+    "engine_type": "TS",
+    "mtow": 4.0,
+    "oew": 3.0,
+    "mfc": 0,
+    "engines": [["Rotor-1", 0.0745], ["Rotor-2", 0.0745], ["Rotor-3", 0.0745], ["Rotor-4", 0.0745]],
+    "envelop": {
+      "v_min": 0,
+      "v_max": 17.0,
+      "vs_min": -5,
+      "vs_max": 5,
+      "h_max": 150,
+      "ax_max": 0.9308
+    }
+  },
+  "GLC": {
+    "name": "Generic Lift+Cruise drone, MSc thesis (experimenten/config/vehicles.py, GENERIC_LC)",
+    "n_engines": 5,
+    "engine_type": "TS",
+    "mtow": 6.0,
+    "oew": 5.0,
+    "mfc": 0,
+    "engines": [["Lift-1", 0.1724], ["Lift-2", 0.1724], ["Lift-3", 0.1724], ["Lift-4", 0.1724], ["Cruise", 0.0973]],
+    "envelop": {
+      "v_min": 0,
+      "v_max": 15.4,
+      "vs_min": -5,
+      "vs_max": 5,
+      "h_max": 150,
+      "ax_max": 0.9308
+    }
   }
 }  
       

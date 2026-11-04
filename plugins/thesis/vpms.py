@@ -35,7 +35,9 @@ What a drone does (one state per drone):
           a multicopter follower falls back by flying slower; an L+C cannot (it flies just above stall),
           so the L+C ahead of it speeds up, to at most V_LC_MAX, until GAP_MIN is back. If that leader
           has no room ahead, the follower falls back after all (and leaves its wing)
-  HOLD    hover at the end of the arc while not cleared (as in Chang et al.)
+  HOLD    hover at the end of the arc while not cleared (as in Chang et al.). The drone ahead brakes to a
+          standstill at the end of its arc (A_DECEL) and then hovers (decision 04-11-2026; before, it
+          stopped there at once, which BlueSky could only do with its own, higher acceleration)
   DIRECT  cleared: straight to the merge point, descending to 40 m, and decelerating so
           that it arrives there in hover (an L+C finishes its transition before it)
   FINAL   vertical descent: 2 m/s down to 5 m, 0.5 m/s below that; never closer than
@@ -52,6 +54,12 @@ the predicted flight time to the merge point (eta_err, drawn by TRAFFIC). The se
 with the prediction, the drone flies the real time, so the real intervals at the merge point
 differ from the planned ones. The structure also works with wind (hover = nose into the wind,
 position held), for later research; this study does not use it.
+
+Flight performance in BlueSky (decision 04-11-2026): the drones are the BlueSky types GMC and GLC, the
+generic drones of this thesis, with their own limits in BlueSky's OpenAP type file
+(bluesky/resources/performance/OpenAP/rotor/aircraft.json): speed MC 17 m/s, L+C 15.4 m/s; vertical
+speed 5 m/s up and down; ceiling 150 m; acceleration and braking A_DECEL (0.93 m/s2) for both.
+Before, they were the DJI M200 and the Amazon octocopter of that file, with their limits.
 
 Drones are handed to VPMS by the TRAFFIC plugin (register); other drones are ignored.
 Events for FLIGHTLOG: arc_in, hold, direct_to, merge, touchdown, speedup, speedup_end.
@@ -85,7 +93,7 @@ ARC_DEG = 150.0               # arc extent (deg)
 ARC_DIR = 1                   # 1 = clockwise seen from above
 T_TARGET = 40.0               # s: target separation at the merge point (arc entry only measured)
 SEP_H, SEP_V = 32.0, 7.62     # m: separation minima (Metropolis II)
-LC_TYPES = {"AMZN"}           # BlueSky types that are Lift+Cruise (same as ENERGY)
+LC_TYPES = {"GLC"}            # BlueSky types that are Lift+Cruise (same as ENERGY)
 V_ARC = (MC.v_endurance, LC.v_arc)    # m/s waiting speed (MC v_e 5.7, L+C 1.05 Vstall 12.4)
 V_ENTRY = (MC.v_range, LC.v_arc)      # m/s from gate to arc (MC v_r 9.0, L+C on the wing): fixed for now,
                                       # the L+C speed window follows with the sequencer (decision 29-10-2026)
@@ -98,11 +106,16 @@ ENTRY_OFFSET = 25.0           # m: speed variant: each entry point lies this far
                               #    radial, MC counter-clockwise, L+C clockwise: 50 m apart (decision 03-11-2026).
                               #    Needed: >= SEP_H / (1 + r_clear / r_LC) = 18.5 m per side (see the top);
                               #    0 = one shared entry point (design of 29-10-2026, needs single_entry_time())
-V_LC_MAX = 16.7               # m/s: an L+C leader speeds up to at most this to restore GAP_MIN for an L+C
-                              #    behind it: the cruise speed of the DeltaQuad Pro (120 km in 120 min), the
-                              #    point on which the wing model is calibrated (decision 03-11-2026)
+V_LC_MAX = 15.4               # m/s: an L+C leader speeds up to at most this to restore GAP_MIN for an L+C
+                              #    behind it (decision 03-11-2026). Decision 04-11-2026: 15.4 m/s, the highest
+                              #    speed of Metropolis II, so that all speeds lie within the conditions of its
+                              #    separation minima (was 16.7 m/s, the calibration point of the wing model).
+                              #    Also v_max of GLC in BlueSky
 A_DECEL = LC.v_arc ** 2 / (2 * 83.0)  # m/s2: L+C stops in 83 m (Mathur transition); also MC
-A_ACC = 2.0                   # m/s2: speeding up from a hold (BlueSky axmax of M200 and AMZN)
+A_ACC = A_DECEL               # m/s2: speeding up (decision 04-11-2026): BlueSky accelerates and brakes GMC and
+                              #    GLC at one rate, ax_max in their type file = A_DECEL (was 2.0, an assumption)
+ARRIVE_R, ARRIVE_V = 0.5, 0.5 # m, m/s: a drone has arrived at the end of its arc when it is within ARRIVE_R of
+                              #    it and slower than ARRIVE_V: a standstill (decision 04-11-2026)
 V_DESC = (2.0, 0.5)           # m/s final descent above / below H_SLOW (profile P2). 2 m/s is 0.37 (MC) and
                               #    0.32 (L+C) of the induced velocity in hover: below the onset of the vortex
                               #    ring state (about 0.4, Talaeizadeh et al.; Mori et al. saw none at about 0.65)
@@ -533,7 +546,9 @@ class Vpms(core.Entity):
             for rank, i in enumerate(members):
                 lc = int(self.is_lc[i])
                 r = arc_radius(lc)
-                if self.state[i] == ARC and progress[i] >= ARC_DEG:
+                d_own = r * np.radians(max(ARC_DEG - progress[i], 0.0))   # to the end of its own arc
+                if self.state[i] == ARC and (progress[i] >= ARC_DEG
+                                             or (d_own < ARRIVE_R and traf.gs[i] < ARRIVE_V)):
                     self.state[i] = HOLD
                     self.hx[i], self.hy[i] = polar(arc_start_bearing(self.gate[i], self.is_lc[i])
                                                    + ARC_DIR * ARC_DEG, r)
@@ -544,6 +559,7 @@ class Vpms(core.Entity):
                     self.hover(i, self.hx[i], self.hy[i])
                     continue
                 v = V_LC_MAX if i in restore else V_ARC[lc]
+                v = min(v, np.sqrt(2 * A_DECEL * d_own))       # can always stop at the end of its arc
                 if rank > 0:                                   # drone ahead on the same arc
                     lead = members[rank - 1]
                     # straight-line distance (chord), as in the separation check; on these radii it is
@@ -580,7 +596,8 @@ class Vpms(core.Entity):
         if i is not None:
             gs = self.cruise_gs(i, -y[i] / dist[i], -x[i] / dist[i])
             t = time_to_merge(max(dist[i] - 3.0, 0.0), gs)          # merge point reached at 3 m
-            t += max(gs - traf.gs[i], 0.0) / (2 * A_ACC)               # speeding up from a hold
+            dv = max(gs - traf.gs[i], 0.0)                         # speeding up (from a hold: from 0):
+            t += dv ** 2 / (2 * A_ACC * max(gs, 0.1))              # time lost against flying at gs all the way
             t_pred = t * (1 + self.eta_err[i])                     # what the sequencer believes
             if now + t_pred >= self.t_last_merge + T_TARGET + DT:  # + DT: update interval
                 self.state[i] = DIRECT

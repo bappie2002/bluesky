@@ -35,6 +35,7 @@ class OpenAP(PerfBase):
             self.ff_coeff_b = np.array([])  # icao fuel flows coefficient b
             self.ff_coeff_c = np.array([])  # icao fuel flows coefficient c
             self.engpower = np.array([])  # engine power, rotor ac
+            self.axmax_rotor = np.array([])  # max acceleration of a rotor ac (m/s2), from its type file (thesis 04-11-2026)
             self.cd0_clean = np.array([])  # Cd0, clean configuration
             self.k_clean = np.array([])  # k, clean configuration
             self.cd0_to = np.array([])  # Cd0, takeoff configuration
@@ -119,6 +120,8 @@ class OpenAP(PerfBase):
             self.vsmin[-n:] = self.coeff.limits_rotor[actype]["vsmin"]
             self.vsmax[-n:] = self.coeff.limits_rotor[actype]["vsmax"]
             self.hmax[-n:] = self.coeff.limits_rotor[actype]["hmax"]
+            self.axmax_rotor[-n:] = self.coeff.limits_rotor[actype]["axmax"]
+            self.axmax[-n:] = self.axmax_rotor[-n:]
 
             self.cd0_clean[-n:] = np.nan
             self.k_clean[-n:] = np.nan
@@ -394,8 +397,9 @@ class OpenAP(PerfBase):
         # fix-wing, on ground
         axmax[self.phase == ph.GD] = axmax_fixwing_ground
 
-        # drones
-        axmax[self.lifttype == coeff.LIFT_ROTOR] = axmax_rotor
+        # drones: the acceleration of their type file (ax_max), default axmax_rotor (thesis 04-11-2026)
+        rotor = self.lifttype == coeff.LIFT_ROTOR
+        axmax[rotor] = self.axmax_rotor[rotor]
 
         # global minumum acceleration
         axmax[axmax < 0.5] = 0.5

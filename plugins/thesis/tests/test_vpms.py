@@ -28,6 +28,8 @@ print(f"Variant {variant}, prediction error {eta} %, {demand} drones/h: radius M
 
 los_pairs, overshoot, max_radial, trans_on_arc, spawned = set(), 0.0, 0.0, set(), set()
 sped_up, v_max_seen = set(), 0.0       # L+C leaders that sped up for an L+C behind them (decision 03-11-2026)
+braking_to_end = set()                 # L+C below stall because it brakes to the end of its arc (decision 04-11-2026)
+perf_seen = {}                         # BlueSky limits per type, as BlueSky uses them (decision 04-11-2026)
 print(f"Entry offset {V.ENTRY_OFFSET:.0f} m per side (needed {V.entry_offset_min():.1f} m); hand-over MC-MC "
       f"{V.handover_time(False, False):.1f} s, L+C-L+C {V.handover_time(True, True):.1f} s, "
       f"L+C behind MC {V.handover_time(False, True):.1f} s")
@@ -50,6 +52,16 @@ while bs.sim.simt < 4000 and not sc.done:
                   f"alt={bs.traf.alt[a]:.0f} | {bs.traf.id[b]} {S[vp.state[b]]} r={np.hypot(x[b], y[b]):.0f} m "
                   f"alt={bs.traf.alt[b]:.0f} | dh={dh[a, b]:.0f} m dv={dv[a, b]:.1f} m")
         los_pairs.add(pair)
+    prog_all = {}
+    for i in range(n):
+        if vp.state[i] in (V.ARC, V.HOLD):
+            p_ = (np.degrees(np.arctan2(x[i], y[i])) - V.arc_start_bearing(vp.gate[i], vp.is_lc[i])) % 360
+            prog_all[i] = 0.0 if p_ > 300 else p_
+        try:
+            P = bs.traf.perf
+            perf_seen[bs.traf.type[i]] = (P.vmax[i], P.vsmin[i], P.vsmax[i], P.axmax[i], P.hmax[i])
+        except (AttributeError, IndexError):
+            pass
     for i in range(n):
         if vp.state[i] == V.ARC:
             err = np.hypot(x[i], y[i]) - V.arc_radius(vp.is_lc[i])        # + outside, - inside
@@ -60,7 +72,10 @@ while bs.sim.simt < 4000 and not sc.done:
             if prog > 20.0:
                 max_radial = max(max_radial, abs(err))                 # once on the arc
             if vp.is_lc[i] and bs.traf.tas[i] < 11.8:
-                trans_on_arc.add(bs.traf.id[i])
+                key = V.arc_key(vp.gate[i], vp.is_lc[i])
+                ahead = any(j != i and V.arc_key(vp.gate[j], vp.is_lc[j]) == key and prog_all[j] > prog_all[i]
+                            for j in prog_all)
+                (trans_on_arc if ahead else braking_to_end).add(bs.traf.id[i])
         if vp.speedup[i]:
             sped_up.add(bs.traf.id[i])
             v_max_seen = max(v_max_seen, float(bs.traf.tas[i]))
@@ -73,9 +88,14 @@ print(f"Touchdown intervals:    min {touch.min():.1f} s  (one at a time: >= 33.5
 print(f"Arcs: overshoot to the inside {max(-overshoot, 0.0):.1f} m; largest deviation after the first 20 deg {max_radial:.1f} m")
 print(f"Losses of separation (32 m and 7.62 m): {len(los_pairs)} pairs {sorted(los_pairs)[:6]}")
 print(f"L+C below stall on an arc (behind a slower or holding drone): {len(trans_on_arc)} {sorted(trans_on_arc)[:6]}")
+print(f"L+C below stall while braking to the end of its own arc (no drone ahead): {len(braking_to_end)}")
 print(f"L+C leaders that sped up to restore 64 m: {len(sped_up)} {sorted(sped_up)[:6]}; fastest {v_max_seen:.1f} m/s "
       f"(at most {V.V_LC_MAX} m/s)")
 
+for typ, (vmax, vsmin, vsmax, axmax, hmax) in sorted(perf_seen.items()):
+    print(f"BlueSky limits {typ}: speed max {vmax:.1f} m/s, vertical {vsmin:.1f} to {vsmax:.1f} m/s, "
+          f"acceleration {axmax:.2f} m/s2, ceiling {hmax:.0f} m (expected for GMC/GLC: 17.0 / 15.4, -5 to 5, "
+          f"{V.A_DECEL:.2f}, 150)")
 holds = sum(1 for t, _ in vp.merges)  # placeholder to keep names short
 import csv
 rows = list(csv.DictReader(open(f"output/vpms_{variant}/flights.csv")))

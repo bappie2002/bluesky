@@ -26,8 +26,10 @@ from energy_model import MODES                           # noqa: E402
 # PARAMETERS of the plugin (not of the model)
 # =============================================================================
 DT = 1.0              # update interval (s)
-LC_TYPES = {"AMZN"}   # BlueSky types that are Lift+Cruise; all other types are multicopters
-                      # (the type sets the flight performance only; the energy comes from the model)
+LC_TYPES = {"GLC"}    # BlueSky types that are Lift+Cruise; all other types are multicopters. GMC and GLC are
+                      # the generic drones of this thesis in BlueSky's OpenAP type file (decision 04-11-2026);
+                      # the type sets the flight performance only (speeds, vertical speeds, acceleration),
+                      # the energy comes from the model
 E_TRANS_J, T_TRANS = LC.transition("to_rotor")   # one wing -> rotor transition: energy (J), duration (s)
 P_TRANS = E_TRANS_J / T_TRANS                      # mean power during that transition (W)
 E_TRANS_WING_J, T_TRANS_WING = LC.transition("to_wing")   # one rotor -> wing transition (J, s)

@@ -127,6 +127,8 @@ class Coefficient:
             limits_rotor[mdl]["vsmin"] = ac["envelop"].get("vs_min", -5)
             limits_rotor[mdl]["vsmax"] = ac["envelop"].get("vs_max", 5)
             limits_rotor[mdl]["hmax"] = ac["envelop"].get("h_max", 2500)
+            # thesis (04-11-2026): optional maximum acceleration per type; BlueSky's own value 3.5 m/s2 otherwise
+            limits_rotor[mdl]["axmax"] = ac["envelop"].get("ax_max", 3.5)
 
             params = ["v_min", "v_max", "vs_min", "vs_max", "h_max"]
             if set(params) <= set(ac["envelop"].keys()):

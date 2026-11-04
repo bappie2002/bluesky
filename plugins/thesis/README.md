@@ -40,9 +40,12 @@ wijziging alle vier opnieuw.
   - vleugel → rotors: start als hij onder de overtreksnelheid zakt; 10 s, 3,9 Wh;
   - rotors → vleugel: start als hij onder de overtreksnelheid de opdracht krijgt om op of boven
     de overtreksnelheid te vliegen; 15 s, 4,5 Wh (sinds 27-10).
-- Welke drone welke configuratie is, volgt uit het BlueSky-type: `AMZN` = Lift+Cruise,
-  al het andere (bijv. `M200`) = multicopter. Het type bepaalt alleen hoe de drone
-  beweegt; het energieverbruik komt uit deze plugin.
+- Welke drone welke configuratie is, volgt uit het BlueSky-type: `GLC` = Lift+Cruise,
+  al het andere (`GMC`) = multicopter. GMC en GLC zijn de generieke drones van deze thesis in het
+  OpenAP-typebestand van BlueSky (`bluesky/resources/performance/OpenAP/rotor/aircraft.json`, besluit 04-11):
+  snelheid MC 17 m/s, L+C 15,4 m/s; stijgen en dalen 5 m/s; plafond 150 m; versnellen en remmen 0,93 m/s²
+  (`ax_max`, nieuw veld, gelezen in `openap/coeff.py` en `perfoap.py`). Het type bepaalt alleen hoe de
+  drone beweegt; het energieverbruik komt uit deze plugin. Tot 04-11: DJI M200 en de Amazon-octocopter.
 - **Het energiemodel staat niet in dit bestand.** Het heeft één plek, in de map `experimenten`:
   formules in `experimenten/plugins/energy_model.py`, waarden in `experimenten/config/vehicles.py`.
   `energy.py` importeert die en past ze elke seconde toe op elke drone.

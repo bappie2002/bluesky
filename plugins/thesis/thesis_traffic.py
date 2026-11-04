@@ -59,7 +59,8 @@ SOC_RANGE = (0.40, 0.80)
 T_SETTLE = 2.0                         # s on the pad until the drone stands still
 T_WORKER = (2.0, 6.0)                  # s to take it off, uniform
 T_PAD_LONG = 60.0                      # s, pad mode LONG
-TYPE = ("M200", "AMZN")                # BlueSky types for MC and L+C (as in ENERGY)
+TYPE = ("GMC", "GLC")                  # BlueSky types for MC and L+C (as in ENERGY): the generic drones of this
+                                       # thesis, with their limits in BlueSky's OpenAP type file (decision 04-11-2026)
 P_WAIT = (float(MC.sim_power(np.array([MC.v_endurance]))[0][0]),   # W, waiting outside the
           float(LC.sim_power(np.array([LC.v_arc]))[0][0]))       # structure at the waiting speed
 E_BAT = (MC.battery_wh, LC.battery_wh)

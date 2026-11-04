@@ -14,10 +14,10 @@ def run_until(t):
 
 
 for cmd in ["PLUGINS LOAD ENERGY", "PLUGINS LOAD FLIGHTLOG", "FLIGHTLOG test TRACE",
-            "CRE MC1 M200 52.0 4.0 90 300 0",        # hovers
-            "CRE MC2 M200 52.0 4.0002 90 300 0",     # hovers 13.7 m east of MC1: loss of separation
+            "CRE MC1 GMC 52.0 4.0 90 300 0",         # hovers
+            "CRE MC2 GMC 52.0 4.0002 90 300 0",      # hovers 13.7 m east of MC1: loss of separation
             "SOC MC2 0.5",                           # as the ARRIVALS plugin does
-            "CRE LC1 AMZN 52.0 4.05 90 300 30"]:     # flies on its wing, far away
+            "CRE LC1 GLC 52.0 4.05 90 300 30"]:      # flies on its wing, far away
     bs.stack.stack(cmd)
 bs.sim.step()
 energy = next(m for k, m in sys.modules.items() if k.endswith(".energy"))
