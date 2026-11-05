@@ -6,18 +6,20 @@ Geometry (methodology, Airspace Structure and Separation; decisions 22, 23 and 2
     (decision 29-10-2026: drones descend from the transit airspace before the gate), GATE_MARGIN
     outside the outer arc, so the entry leg is level
   - per gate an arc of 150 deg around the pad, flown clockwise, at 100 m (gates 0 and 2)
-    or 90 m (gates 1 and 3): neighbouring arcs overlap 60 deg and lie 10 m apart vertically,
-    more than the vertical minimum of 7.62 m
+    or 88.57 m (gates 1 and 3): neighbouring arcs overlap 60 deg and lie K_SPACING x SEP_V = 11.43 m
+    apart vertically (decision 05-11-2026; was 90 m, 10 m apart)
   - arc radius r = 2 T_target V / theta: an arc absorbs two target separations
       VARIANT "shared": one arc per gate for both types, radius set by the L+C (379 m)
       VARIANT "speed":  per gate an MC arc (174 m) and an L+C arc (379 m), same height
   - entry points (decision 03-11-2026): in the speed variant every gate has two entry points,
-    ENTRY_OFFSET (25 m) to either side of the gate's radial line, 50 m apart: the MC on the
+    entry_offset() (about 27 m) to either side of the gate's radial line, about 55 m apart: the MC on the
     counter-clockwise side, the L+C on the clockwise side, the side to which it turns onto its arc,
     so it never crosses the MC's line. Both fly a line parallel to the radial to their arc, which
     therefore starts a few degrees from the gate bearing (arc_start_bearing: MC -8.3, L+C +3.8 deg).
-    50 m and not 32 m: the direct leg of an L+C cleared at its arc start converges on the merge
-    point, and must stay SEP_H from the MC's line until it is SEP_V lower (at least 37 m needed).
+    The offset is computed (entry_offset_min, decision 05-11-2026; was 25 m): the direct leg of an L+C
+    cleared at its arc start converges on the merge point, and must stay K_SPACING x SEP_H (48 m) from the
+    MC's line until it is K_SPACING x SEP_V (11.43 m) lower: a line planned into the structure, like the
+    arc heights.
     The shared variant keeps one entry point per gate.
 
 What a drone does (one state per drone):
@@ -30,15 +32,18 @@ What a drone does (one state per drone):
           that closes in on the drone ahead on the same arc takes over its speed. For an
           L+C behind a multicopter this means leaving the wing and flying on the rotors.
           Decision 29-10-2026: entry leg and arc form one lane per arc; a follower keeps GAP_MIN
-          (64 m = 2 x SEP_H) to the drone ahead, not T_TARGET (the 40 s is a wish at the merge point),
-          and a drone that leaves for the merge point stays its leader until SEP_H + 5 m inside the arc.
+          (48 m = K_SPACING x SEP_H, decision 05-11-2026; was 64 m) to the drone ahead, not T_TARGET (the
+          40 s is a wish at the merge point), and a drone that leaves for the merge point stays its leader
+          until SEP_H inside the arc (was SEP_H + 5 m).
           The gap is always the straight-line distance between the two drones, as in the separation
           check (decision 04-11-2026; before, the distance along the lane, which was wrong while a
           drone cuts the corner onto its arc: 93 m or 23 m where the drones were 44 m apart)
           Restoring GAP_MIN after a tight hand-over (decision 03-11-2026, a structure rule in all cases):
           a multicopter follower falls back by flying slower; an L+C cannot (it flies just above stall),
           so the L+C ahead of it speeds up, to at most V_LC_MAX, until GAP_MIN is back. If that leader
-          has no room ahead, the follower falls back after all (and leaves its wing).
+          has no room ahead, the follower falls back after all (and leaves its wing). With three or more
+          L+C in a row, the L+C ahead of a leader that speeds up speeds up too while it is within reach
+          (a chain, decision 05-11-2026; restore_flags).
           The leader speeds up only on its arc, not on its entry leg (decision 05-11-2026): at 15.4 m/s its
           look-ahead for the turn onto the arc would be 104 m, longer than the 100 m entry leg, and its
           turn radius 52 m instead of 34 m, so the turn-in would no longer be the one handover_time
@@ -47,8 +52,14 @@ What a drone does (one state per drone):
   HOLD    hover at the end of the arc while not cleared (as in Chang et al.). The drone ahead brakes to a
           standstill at the end of its arc (A_DECEL) and then hovers (decision 04-11-2026; before, it
           stopped there at once, which BlueSky could only do with its own, higher acceleration)
-  DIRECT  cleared: straight to the merge point, descending to 40 m, and decelerating so
-          that it arrives there in hover (an L+C finishes its transition before it). It brakes to a
+  DIRECT  cleared: straight to the merge point at V_DIRECT, descending to 40 m, and decelerating so
+          that it arrives there in hover (an L+C finishes its transition before it). The descent follows a
+          plan made at the clearance (plan_descent, decision 05-11-2026): the same share of the allowed
+          descent rate everywhere (VS_FAST at speed, VS_DIRECT_MAX while slow), ending exactly at 40 m on
+          the merge point, but later or earlier where it passes within SEP_H of another flow (arc or entry
+          leg) and would be less than K_SPACING x SEP_V above or below it. Where no such descent exists
+          (an L+C from an upper arc in the speed variant, about 75-86 deg along its arc, alongside the MC
+          entry leg of the next gate), the drone is not cleared: a no-go zone (event nogo). It brakes to a
           standstill on the merge point itself and only then counts as arrived (decision 04-11-2026;
           before, it counted as arrived within 3 m while it still flew 1.9 m/s, so it arrived about
           2 s earlier than the sequencer had planned). It brakes one update early, so that it does not
@@ -56,8 +67,10 @@ What a drone does (one state per drone):
           direct leg ahead with these same rules (predict_time): without prediction error the drone
           arrives exactly when planned (T5, 05-11-2026; before, 0.6 to 2.9 s later)
   FINAL   vertical descent: 2 m/s down to 5 m, 0.5 m/s below that; never closer than
-          SEP_V above the drone below it, also not above a drone that is still on the pad.
-          This gives the minimum time between two landings (17.3 s with a pad time of 6 s).
+          K_SPACING x SEP_V (11.43 m) above the drone below it, also not above a drone that is still
+          on the pad: a place where a drone can hover, so planned with K_SPACING (decision 05-11-2026;
+          was SEP_V). This gives the minimum time between two landings (19.2 s with a pad time of 6 s;
+          was 17.3 s).
   PAD     on the pad for its pad time (2 s standing still + time to take it off), then deleted
 
 Sequencing in this file is first-come-first-served (case C1): drones are cleared in the
@@ -102,26 +115,44 @@ from vehicles import GENERIC_MC as MC, GENERIC_LC as LC   # noqa: E402
 # =============================================================================
 VARIANT = "shared"            # "shared" (case C1) or "speed" (arcs per speed class)
 PAD_LAT, PAD_LON = 52.0, 4.0  # landing pad
-H_ARC = (100.0, 90.0)         # m: arc height for even / odd gates; the gate lies at the same height
+SEP_H, SEP_V = 32.0, 7.62     # m: separation minima (Metropolis II): the definition of a loss of separation, and the
+                              #    distance in every rule that checks the real positions each update and that a
+                              #    drone only passes through: hand-over, keeping the arc height and staying a
+                              #    leader until SEP_H inside the arc (decision 05-11-2026)
+K_SPACING = 1.5               # spacing factor (decision 05-11-2026): distances planned into the structure are
+                              #    K_SPACING x the minimum: the gap in a lane (GAP_MIN), the height between
+                              #    overlapping arcs (H_ARC), the side offset of the entry points (entry_offset_min),
+                              #    and the places where a drone can hover: waiting for a merge point that is not free
+                              #    (48 m), the column above the pad and the merge point free (11.43 m).
+                              #    The minima themselves come from the literature and are not scaled
+H_ARC = (100.0, 100.0 - K_SPACING * SEP_V)   # m: arc height for even / odd gates (100 and 88.57 m): overlapping
+                              #    arcs lie K_SPACING x SEP_V = 11.43 m apart (was 90 m); the gate lies at the same height
 H_MERGE = 40.0                # m: merge point, straight above the pad
 GATE_BEARINGS = (0.0, 90.0, 180.0, 270.0)
 ARC_DEG = 150.0               # arc extent (deg)
 ARC_DIR = 1                   # 1 = clockwise seen from above
 T_TARGET = 40.0               # s: target separation at the merge point (arc entry only measured)
-SEP_H, SEP_V = 32.0, 7.62     # m: separation minima (Metropolis II)
 LC_TYPES = {"GLC"}            # BlueSky types that are Lift+Cruise (same as ENERGY)
 V_ARC = (MC.v_endurance, LC.v_arc)    # m/s waiting speed (MC v_e 5.7, L+C 1.05 Vstall 12.4)
 V_ENTRY = (MC.v_range, LC.v_arc)      # m/s from gate to arc (MC v_r 9.0, L+C on the wing): fixed for now,
                                       # the L+C speed window follows with the sequencer (decision 29-10-2026)
 VS_ENTRY = 2.0                # m/s: vertical speed for height corrections on the entry leg and arcs
-VS_DIRECT_MAX = 2.0           # m/s largest descent rate on the direct leg: no drone descends faster than
-                              #    2 m/s anywhere (vortex ring state, decision 29-10-2026; see V_DESC)
+V_DIRECT = (MC.v_range, LC.v_arc)     # m/s cruise airspeed on the direct leg (decision 05-11-2026): the MC at its
+                                      #    range speed 9.0 m/s (was its waiting speed 5.7 m/s), the L+C on its wing
+VS_DIRECT_MAX = 2.0           # m/s largest descent rate on the direct leg at low forward speed, and in the final
+                              #    descent (vortex ring state, decision 29-10-2026; see V_DESC)
+V_IH = (MC.v_ih, float(np.sqrt(LC.disk_loading * 9.81 / (2 * 1.225))))   # m/s induced velocity in hover (5.4, 6.3)
+K_VRS = 1.5                   # decision 05-11-2026: faster than VS_DIRECT_MAX only at a forward speed of at least
+VS_FAST = 5.0                 #    K_VRS x V_IH (MC 8.1, L+C 9.5 m/s): the rotor then gets clean air, so the vortex
+                              #    ring state cannot form; up to VS_FAST, the limit of GMC and GLC in BlueSky
+DH_STEP = 0.05                # m: height step of the descent plan
 GATE_MARGIN = 100.0           # m: level stretch gate -> outer arc: the L+C starts its turn onto the
                               #    arc look_ahead (67 m) before the arc start, after ~2.5 s straight
-ENTRY_OFFSET = 25.0           # m: speed variant: each entry point lies this far to the side of the gate's
-                              #    radial, MC counter-clockwise, L+C clockwise: 50 m apart (decision 03-11-2026).
-                              #    Needed: >= SEP_H / (1 + r_clear / r_LC) = 18.5 m per side (see the top);
-                              #    0 = one shared entry point (design of 29-10-2026, needs single_entry_time())
+ENTRY_OFFSET = None           # m: speed variant: each entry point lies entry_offset() to the side of the gate's
+                              #    radial, MC counter-clockwise, L+C clockwise (decision 03-11-2026). None = computed,
+                              #    entry_offset_min() (decision 05-11-2026; was 25 m); VPMS OFFSET m sets a fixed
+                              #    value, VPMS OFFSET -1 computed again; 0 = one shared entry point (design of
+                              #    29-10-2026, needs single_entry_time())
 V_LC_MAX = 15.4               # m/s: an L+C leader speeds up to at most this to restore GAP_MIN for an L+C
                               #    behind it (decision 03-11-2026). Decision 04-11-2026: 15.4 m/s, the highest
                               #    speed of Metropolis II, so that all speeds lie within the conditions of its
@@ -140,9 +171,10 @@ H_SLOW = 5.0                  # m
 T_PAD = 6.0                   # s on the pad when TRAFFIC gives none
 L_MIN = 15.0                  # m: smallest look-ahead distance on the arc
 T_CLOSE = 10.0                # s: how fast a follower restores its spacing on the arc
-GAP_MIN = 2 * SEP_H           # m: smallest gap on an arc, behind a drone that hovers
+GAP_MIN = K_SPACING * SEP_H   # m: smallest gap in a lane, also behind a drone that hovers: 48 m (decision
+                              #    05-11-2026; was 2 x SEP_H = 64 m)
 ARC_SPACING = "distance"      # what a follower keeps in its lane (entry leg + arc): "distance" = GAP_MIN, a
-                              #    buffer of 2 x SEP_H above the hard minimum (decision 29-10-2026; the 40 s is
+                              #    buffer of K_SPACING x SEP_H above the hard minimum (decision 29-10-2026; the 40 s is
                               #    a wish at the merge point, not a rule in the lane). "time" = max(T_TARGET x
                               #    v_lead, GAP_MIN), the earlier rule, kept for the comparison test
 V_GROUND = 4.0                # m/s: below this airspeed on an arc, steer on ground speed (wind)
@@ -173,13 +205,31 @@ def gate_distance():
     return arc_radius(True) + GATE_MARGIN
 
 
+_CLEAR = {}  # clear_distance per geometry
+
+
 def clear_distance():
-    """Distance from the pad (m) at which an L+C on its direct leg is SEP_V below its arc height: it keeps
-    the arc height until SEP_H + 5 m inside the arc, then descends at vs (lowest arcs: slowest, worst case)."""
-    v_lc = V_ENTRY[1]
-    d0 = arc_radius(True) - SEP_H - 5.0                                   # descent starts here
-    vs = min((min(H_ARC) - H_MERGE) / time_to_merge(d0, v_lc), VS_DIRECT_MAX)
-    return d0 - v_lc * SEP_V / vs                                         # about 278 m
+    """Distance from the pad (m) at which an L+C cleared at the start of its arc is K_SPACING x SEP_V (11.43 m)
+    below its arc height (for entry_offset_min). Decision 05-11-2026: from its descent plan, the same rules as
+    in flight (descent_heights), on the radial line, with only the neighbouring arcs as constraint: from an
+    upper arc it keeps its height until SEP_H inside, from a lower arc it descends at once. The larger of the
+    two (was: SEP_H inside, then 2 m/s at most)."""
+    key = (VARIANT, T_TARGET, K_SPACING, H_MERGE)
+    if key not in _CLEAR:
+        r = arc_radius(True)
+        px, py, pv = direct_path(0.0, r, V_ARC[1], 180.0, V_DIRECT[1])
+        worst = 0.0
+        for par in (0, 1):
+            h0, h_other = H_ARC[par], H_ARC[1 - par]
+            grid = height_grid(h0)
+            forbid = np.zeros((len(px), len(grid)), dtype=bool)
+            near = np.hypot(px, py) > r - SEP_H
+            forbid[near] |= band(grid, h_other)[None, :]
+            heights = descent_heights(grid, forbid, pv, True)
+            k = int(np.argmax(heights <= h0 - K_SPACING * SEP_V + 1e-9))
+            worst = max(worst, float(np.hypot(px[k], py[k])))
+        _CLEAR[key] = worst
+    return _CLEAR[key]
 
 
 def single_entry_time():
@@ -197,8 +247,16 @@ def single_entry_time():
 def entry_offset_min():
     """Smallest side offset (m) of each entry point (speed variant, symmetric). The direct leg of an L+C
     cleared at its arc start points at the merge point, so it comes closer to the MC's line further in;
-    at clear_distance() it must still be SEP_H away: h + h * d_clear / r_LC >= SEP_H. About 18.5 m."""
-    return SEP_H / (1 + clear_distance() / arc_radius(True))
+    at clear_distance() it must still be K_SPACING x SEP_H away (a line planned into the structure, decision
+    05-11-2026): h + h * d_clear / r_LC >= K_SPACING x SEP_H. About 27 m with the descent of 05-11-2026 (29 m with
+    the descent before it; was SEP_H: 18.5 m, with 25 m chosen)."""
+    return K_SPACING * SEP_H / (1 + clear_distance() / arc_radius(True))
+
+
+def entry_offset():
+    """Side offset (m) of each entry point in the speed variant: ENTRY_OFFSET when set with VPMS OFFSET m,
+    otherwise computed (entry_offset_min, decision 05-11-2026)."""
+    return entry_offset_min() if ENTRY_OFFSET is None else ENTRY_OFFSET
 
 
 def arc_key(gate, is_lc):
@@ -216,7 +274,7 @@ def lateral(is_lc):
     to). Speed variant: the L+C clockwise, the MC counter-clockwise; shared variant: 0."""
     if VARIANT != "speed":
         return 0.0
-    return ENTRY_OFFSET * ARC_DIR * (1 if is_lc else -1)
+    return entry_offset() * ARC_DIR * (1 if is_lc else -1)
 
 
 def offset_xy(g, is_lc, along):
@@ -283,7 +341,7 @@ def handover_time(lead_lc, foll_lc):
     the formula of 03-11-2026 (4.9 s, which gave 30.8 m in restoreprobe ML). Smallest h with
     handover_gap >= SEP_H, to 0.01 s. Plus DT: a drone is created at the first update after its drawn time.
     Shared variant: MC-MC 4.2 s, L+C-L+C 3.1 s, L+C behind MC 6.1 s, MC behind L+C 3.1 s."""
-    key = (bool(lead_lc), bool(foll_lc), VARIANT, T_TARGET, ENTRY_OFFSET, GATE_MARGIN, A_DECEL, A_ACC, DT, SEP_H)
+    key = (bool(lead_lc), bool(foll_lc), VARIANT, T_TARGET, ENTRY_OFFSET, GATE_MARGIN, A_DECEL, A_ACC, DT, SEP_H, K_SPACING)
     if key not in _HANDOVER:
         lo, hi = 0.0, 30.0
         while hi - lo > 0.005:
@@ -368,6 +426,122 @@ def predict_time(dist, gs, v0=None, turn_deg=0.0):
     return t
 
 
+def direct_path(x, y, v, hdg, gs):
+    """The direct leg flown ahead, as predict_time does it, but in the pad frame: from (x, y) m (east, north) at
+    speed v (m/s) and heading hdg (deg), positions and speeds at every update until the drone stands still on
+    the merge point (decision 05-11-2026, for the descent plan)."""
+    g_tan = 9.81 * np.tan(np.radians(BANK))
+    h = np.radians(hdg)
+    xs, ys, vs = [x], [y], [v]
+    for _ in range(4000):
+        d = np.hypot(x, y)
+        if d < ARRIVE_R and v < ARRIVE_V:
+            break
+        c_hdg = np.arctan2(-x, -y)                                    # VPMS: track at the merge point,
+        c_v = min(gs, np.sqrt(2 * A_DECEL * max(d - v * DT, 0.0)))   # speed one update early
+        v += max(-A_DECEL * DT, min(A_ACC * DT, c_v - v))             # BlueSky: speed,
+        rate = g_tan / max(v, 1e-6) * DT
+        h += max(-rate, min(rate, (c_hdg - h + np.pi) % (2 * np.pi) - np.pi))   # heading,
+        x += v * DT * np.sin(h)                                       # position
+        y += v * DT * np.cos(h)
+        xs.append(x); ys.append(y); vs.append(v)
+    return np.array(xs), np.array(ys), np.array(vs)
+
+
+_FLOWS = {}  # flows per geometry
+
+
+def flows():
+    """Every flow in the structure: (gate, is_lc, height, kind, geometry) for each arc (radius, start bearing)
+    and each entry leg (entry point, arc start). Decision 05-11-2026, for the descent plan."""
+    key = (VARIANT, T_TARGET, ENTRY_OFFSET, K_SPACING, GATE_MARGIN)
+    if key not in _FLOWS:
+        out = []
+        for g in range(len(GATE_BEARINGS)):
+            for lc in ((True,) if VARIANT == "shared" else (False, True)):
+                h = H_ARC[g % 2]
+                out.append((g, lc, h, "arc", (arc_radius(lc), arc_start_bearing(g, lc))))
+                out.append((g, lc, h, "leg", (offset_xy(g, lc, gate_distance()), arc_start(g, lc))))
+        _FLOWS[key] = out
+    return _FLOWS[key]
+
+
+def flow_distance(kind, geo, px, py):
+    """Horizontal distance (m) from the points (px, py) to an arc or an entry leg."""
+    if kind == "arc":
+        r, b0 = geo
+        rel = ((np.degrees(np.arctan2(px, py)) - b0) * ARC_DIR) % 360
+        (ax, ay), (bx, by) = polar(b0, r), polar(b0 + ARC_DIR * ARC_DEG, r)
+        ends = np.minimum(np.hypot(px - ax, py - ay), np.hypot(px - bx, py - by))
+        return np.where(rel <= ARC_DEG, np.abs(np.hypot(px, py) - r), ends)
+    (ax, ay), (bx, by) = geo
+    dx, dy = bx - ax, by - ay
+    t = np.clip(((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy), 0.0, 1.0)
+    return np.hypot(px - ax - t * dx, py - ay - t * dy)
+
+
+def height_grid(h0):
+    """Heights (m) from H_MERGE up to h0 in steps of about DH_STEP, both ends exact."""
+    return np.linspace(H_MERGE, h0, max(int(np.ceil((h0 - H_MERGE) / DH_STEP)), 1) + 1)
+
+
+def band(grid, h):
+    """Heights on the grid that are less than K_SPACING x SEP_V above or below a flow at height h."""
+    dv = K_SPACING * SEP_V
+    return (grid > h - dv + 1e-6) & (grid < h + dv - 1e-6)
+
+
+def descent_heights(grid, forbid, pv, is_lc):
+    """Height (m) at every update of a descent from grid[-1] to H_MERGE (grid[0]) along a path with speeds pv,
+    avoiding the forbidden heights (forbid[k, j]: grid[j] not allowed at update k). Per update the drone descends
+    at most VS_FAST x DT while its speed is at least K_VRS x V_IH, else VS_DIRECT_MAX x DT, and never climbs.
+    It descends the same share of what is allowed everywhere (the share that ends exactly at H_MERGE), but where
+    that would end in a forbidden height or leave no way through later ones, as close to it as it can: later or
+    earlier (decision 05-11-2026). None if no such descent exists."""
+    n = len(pv)
+    if n < 2 or len(grid) < 2:
+        return np.full(n, grid[0])
+    step = grid[1] - grid[0]
+    cap = np.where(pv[1:] >= K_VRS * V_IH[int(is_lc)], VS_FAST, VS_DIRECT_MAX)   # per update k -> k + 1
+    m = np.floor(cap * DT / step + 1e-9).astype(int)
+    idx = np.arange(len(grid))
+    feasible = np.zeros_like(forbid)                   # from here H_MERGE can still be reached
+    feasible[-1, 0] = not forbid[-1, 0]
+    for k in range(n - 2, -1, -1):
+        c = np.concatenate((np.cumsum(feasible[k + 1][::-1])[::-1], [0]))
+        feasible[k] = (c[np.maximum(idx - m[k], 0)] - c[idx + 1] > 0) & ~forbid[k]
+    i = len(grid) - 1
+    if not feasible[0, i]:
+        return None
+    left = np.concatenate((np.cumsum((cap * DT)[::-1])[::-1], [0.0]))   # descent still allowed from update k
+    heights = [grid[i]]
+    for k in range(n - 1):
+        want = grid[i] - (grid[i] - H_MERGE) / max(left[k], 1e-9) * cap[k] * DT
+        cand = np.arange(max(i - m[k], 0), i + 1)
+        cand = cand[feasible[k + 1, cand]]
+        i = int(cand[np.argmin(np.abs(grid[cand] - want))])
+        heights.append(grid[i])
+    return np.array(heights)
+
+
+def plan_descent(g, is_lc, x, y, v, hdg, h0, gs, avoid=True):
+    """Descent plan of a drone cleared now (decision 05-11-2026): its direct leg flown ahead (direct_path) and
+    its height at every update (descent_heights). Forbidden: within SEP_H of another flow (an arc or entry leg,
+    not its own lane, which the lane rules keep apart) and less than K_SPACING x SEP_V above or below it.
+    None if no such descent exists (a no-go zone); avoid=False: without other flows."""
+    px, py, pv = direct_path(x, y, v, hdg, gs)
+    grid = height_grid(h0)
+    forbid = np.zeros((len(px), len(grid)), dtype=bool)
+    if avoid:
+        for fg, flc, fh, kind, geo in flows():
+            if fg == g and (VARIANT == "shared" or flc == is_lc):
+                continue
+            near = flow_distance(kind, geo, px, py) < SEP_H
+            if near.any():
+                forbid[near] |= band(grid, fh)[None, :]
+    return descent_heights(grid, forbid, pv, is_lc)
+
+
 def follow_speed(gap, v_lead, v_own):
     """Speed of a follower at this gap (m) behind a leader at v_lead (m/s): no overtaking. It closes
     or opens the gap to the wanted spacing in about T_CLOSE s, and can always stop GAP_MIN behind."""
@@ -400,7 +574,6 @@ class Vpms(core.Entity):
             self.gate = np.array([], dtype=int)
             self.t_arc_in = np.array([])             # time the drone entered its arc
             self.t_merge = np.array([])              # planned time at the merge point
-            self.vs_direct = np.array([])            # descent rate on the direct leg (m/s)
             self.t_touch = np.array([])              # touchdown time
             self.t_pad = np.array([])                # time on the pad (s)
             self.eta_err = np.array([])              # relative error of the predicted time to the merge point
@@ -416,6 +589,10 @@ class Vpms(core.Entity):
         self.t_last_merge = -np.inf  # planned merge time of the last cleared drone
         self.merges = []             # (time, acid) at the merge point
         self.touchdowns = []         # (time, acid) on the pad
+        self.descent = {}            # acid -> (clearance time, planned height per update) on the direct leg
+        self.nogo_since = {}         # acid -> first time its clearance waited for a no-go zone
+        self.nogo_delays = []        # (acid, s) clearance delayed by a no-go zone (decision 05-11-2026)
+        self.nogo_hold = []          # drones in a hold without a conflict-free descent (expected none)
 
     def reset(self):
         super().reset()
@@ -457,7 +634,8 @@ class Vpms(core.Entity):
 
     def departing_limit(self, i, idx, x, y, dist, v):
         """Decision 29-10-2026 (2b): a drone that left this lane for the merge point stays a leader for
-        the drones still in the lane until it is SEP_H + 5 m inside its arc: the follower then cannot
+        the drones still in the lane until it is SEP_H inside its arc (decision 05-11-2026; was SEP_H + 5 m):
+        no drone on the arc then comes within SEP_H of it, because none flies inside its circle. The follower then cannot
         pass the point of departure too closely. Gap = straight-line distance, leader speed = its speed.
         Decision 03-11-2026: only while the follower closes in on it. After a tight hand-over the gap can
         be below GAP_MIN when the leader leaves; their paths then diverge (the leader turns in to the merge
@@ -467,7 +645,7 @@ class Vpms(core.Entity):
         for j in idx:
             if j == i or self.state[j] != DIRECT or arc_key(self.gate[j], self.is_lc[j]) != key:
                 continue
-            if dist[j] < arc_radius(self.is_lc[j]) - SEP_H - 5.0:
+            if dist[j] < arc_radius(self.is_lc[j]) - SEP_H:
                 continue
             dx, dy = x[j] - x[i], y[j] - y[i]
             if dx * np.sin(trk) + dy * np.cos(trk) <= 0.0:   # not ahead of the follower
@@ -495,7 +673,8 @@ class Vpms(core.Entity):
     def restore_flags(self, idx, x, y, progress, d_start):
         """Decision 03-11-2026: which L+C leaders must speed up. Per lane the drones in order (entry leg:
         minus the distance to the arc start; arc: distance along the arc); an L+C (ENTRY or ARC) whose
-        follower is an L+C closer than GAP_MIN (straight line) speeds up for it. A leader on its entry leg
+        follower is an L+C closer than GAP_MIN (straight line) speeds up for it, and so does the L+C ahead of
+        that leader while it is within reach (a chain, decision 05-11-2026). A leader on its entry leg
         is flagged too, so that its follower does not fall back, but it speeds up only once it is on its
         arc (decision 05-11-2026, see update)."""
         lanes = {}
@@ -508,14 +687,23 @@ class Vpms(core.Entity):
                 continue
             lanes.setdefault(arc_key(self.gate[i], self.is_lc[i]), []).append((pos, i))
         restore = {}
-        for members in lanes.values():
+        reach = GAP_MIN + T_CLOSE * (V_LC_MAX - V_ARC[1])      # closer than this, a leader at V_ARC holds its
+        for members in lanes.values():                         # follower below V_LC_MAX (follow_speed): 78 m
             members.sort(reverse=True)                          # first = furthest along the lane
+            pairs = []
             for (_, lead), (_, foll) in zip(members, members[1:]):
                 if (self.is_lc[lead] and self.is_lc[foll] and self.state[lead] in (ENTRY, ARC)
                         and self.state[foll] in (ENTRY, ARC)):
                     gap = float(np.hypot(x[lead] - x[foll], y[lead] - y[foll]))
+                    pairs.append((lead, foll, gap))
                     if gap < GAP_MIN:
                         restore[lead] = (traf.id[foll], gap)
+            # a chain (decision 05-11-2026): an L+C that speeds up for the one behind it needs room ahead, so
+            # its own L+C leader speeds up too while it is within reach. Without this, with GAP_MIN 48 m the
+            # middle L+C of three stayed 48 m behind the front one and the last gap stayed at 43 m
+            for lead, foll, gap in reversed(pairs):
+                if foll in restore and lead not in restore and gap < reach:
+                    restore[lead] = (traf.id[foll], gap)
         return restore
 
     def set_speedup(self, i, on, info=""):
@@ -558,10 +746,10 @@ class Vpms(core.Entity):
         self.fly(i, track=track, tas=tas)
 
     def cruise_gs(self, i, un, ue):
-        """Ground speed towards (un, ue) when flying at the waiting airspeed in this wind."""
+        """Ground speed towards (un, ue) when flying at the direct-leg airspeed V_DIRECT in this wind."""
         wn, we = self.wind(i)
         w_along, w_cross = wn * un + we * ue, -wn * ue + we * un
-        v_air = V_ARC[int(self.is_lc[i])]
+        v_air = V_DIRECT[int(self.is_lc[i])]
         return np.sqrt(max(v_air ** 2 - w_cross ** 2, 0.0)) + w_along
 
     def hover(self, i, hx, hy):
@@ -697,17 +885,36 @@ class Vpms(core.Entity):
             # exactly T_TARGET: the prediction is exact and lies on the update grid (decision 05-11-2026;
             # before, + DT as a buffer for the old formula, which made the smallest interval 40.5 s)
             if now + t_pred >= self.t_last_merge + T_TARGET - 1e-6:
-                self.state[i] = DIRECT
-                self.t_merge[i] = self.t_last_merge = now + t_pred
-                self.vs_direct[i] = max(traf.alt[i] - H_MERGE, 0.0) / t
-                self.event(i, "direct_to", f"planned merge {now + t_pred:.1f}")
+                acid = traf.id[i]
+                plan = plan_descent(self.gate[i], self.is_lc[i], float(x[i]), float(y[i]), float(traf.tas[i]),
+                                    float(traf.hdg[i]), float(traf.alt[i]), gs)
+                if plan is None and self.state[i] == HOLD:     # never expected: clear it without avoiding
+                    self.nogo_hold.append(acid)
+                    self.event(i, "nogo_hold", "no conflict-free descent from the hold")
+                    plan = plan_descent(self.gate[i], self.is_lc[i], float(x[i]), float(y[i]), float(traf.tas[i]),
+                                        float(traf.hdg[i]), float(traf.alt[i]), gs, avoid=False)
+                if plan is None:                               # no-go zone: wait (decision 05-11-2026)
+                    if acid not in self.nogo_since:
+                        self.nogo_since[acid] = now
+                        self.event(i, "nogo", "no conflict-free descent from here; clearance waits")
+                else:
+                    t_wait = self.nogo_since.pop(acid, None)
+                    if t_wait is not None:
+                        self.nogo_delays.append((acid, now - t_wait))
+                    self.state[i] = DIRECT
+                    self.t_merge[i] = self.t_last_merge = now + t_pred
+                    self.descent[acid] = (now, plan)
+                    self.event(i, "direct_to", f"planned merge {now + t_pred:.1f}"
+                               + (f", after {now - t_wait:.1f} s in a no-go zone" if t_wait is not None else ""))
 
         # 4. direct leg: to the merge point, arriving in hover. The merge point is not free while
-        #    the drone below it is less than SEP_V lower (hard minimum, also when the target fails)
-        busy_merge = any(self.state[j] == FINAL and traf.alt[j] > H_MERGE - SEP_V for j in idx)
+        #    the drone below it is less than K_SPACING x SEP_V (11.43 m) lower, as in the column (decision
+        #    05-11-2026; was SEP_V; also when the target fails)
+        busy_merge = any(self.state[j] == FINAL and traf.alt[j] > H_MERGE - K_SPACING * SEP_V for j in idx)
         for i in idx[self.state[idx] == DIRECT]:
             if dist[i] < ARRIVE_R and traf.gs[i] < ARRIVE_V:          # standstill on the merge point
                 self.state[i] = FINAL
+                self.descent.pop(traf.id[i], None)
                 self.merges.append((now, traf.id[i]))
                 self.event(i, "merge")
                 self.hover(i, 0.0, 0.0)
@@ -716,22 +923,24 @@ class Vpms(core.Entity):
             un, ue = -y[i] / d, -x[i] / d                         # unit vector to the merge point
             stop = 0.0                                            # brake to a standstill on the point itself
             if busy_merge or any(self.state[j] == DIRECT and dist[j] < dist[i] for j in idx if j != i):
-                stop = SEP_H + 3.0     # hard minimum: wait SEP_H from a merge point that is not free
+                stop = K_SPACING * SEP_H   # wait 48 m from a merge point that is not free: a place where a
+                                           # drone stays, so planned with K_SPACING (decision 05-11-2026; was
+                                           # SEP_H + 3 m = 35 m)
             # brake one update early: the speed set now holds for DT, so a drone that brakes on the curve
             # sqrt(2 a d) itself starts up to DT late and overshoots the point (decision 05-11-2026, T5)
             v = min(self.cruise_gs(i, un, ue),
                     np.sqrt(2 * A_DECEL * max(dist[i] - stop - traf.gs[i] * DT, 0.0)))
             self.fly_ground(i, v * un, v * ue)
-            # keep the arc height until SEP_H + 5 m inside the arc: a drone from an upper arc then
-            # passes over the neighbouring lower arc with the full 10 m between them
-            if dist[i] > arc_radius(self.is_lc[i]) - SEP_H - 5.0:
-                self.fly(i, alt=H_ARC[self.gate[i] % 2], vs=VS_ENTRY)
+            # height: the plan made at the clearance, one update ahead (decision 05-11-2026; it replaces keeping
+            # the arc height until SEP_H inside the arc and then at most 2 m/s, which the plan contains)
+            t0, plan = self.descent.get(traf.id[i], (now, None))
+            if plan is None:
+                self.fly(i, alt=H_MERGE, vs=VS_DIRECT_MAX)
             else:
-                t_left = max(time_to_merge(dist[i], max(traf.gs[i], 1.0)), 1.0)
-                vs = min(max((traf.alt[i] - H_MERGE) / t_left, 0.1), VS_DIRECT_MAX)
-                self.fly(i, alt=H_MERGE, vs=vs)
+                h = float(plan[min(int(round((now - t0) / DT)) + 1, len(plan) - 1)])
+                self.fly(i, alt=h, vs=max(abs(float(traf.alt[i]) - h) / DT, 0.01))
 
-        # 5. final descent: never within SEP_V above the drone below (or on the pad)
+        # 5. final descent: never within K_SPACING x SEP_V (11.43 m) above the drone below (or on the pad)
         column = idx[np.isin(self.state[idx], (FINAL, PAD))]
         delete = []
         for i in column:
@@ -741,7 +950,7 @@ class Vpms(core.Entity):
                     self.t_pad[i] = np.inf
                 continue
             below = [traf.alt[j] for j in column if j != i and traf.alt[j] < traf.alt[i]]
-            floor = max(below) + SEP_V if below else 0.0
+            floor = max(below) + K_SPACING * SEP_V if below else 0.0
             target = floor if floor < traf.alt[i] else traf.alt[i]
             self.hover(i, 0.0, 0.0)
             if traf.alt[i] > H_SLOW + 0.05:
@@ -773,11 +982,11 @@ class Vpms(core.Entity):
         if what in ("TIME", "DISTANCE"):
             ARC_SPACING = what.lower()
             return True, f"VPMS spacing in a lane: {ARC_SPACING}"
-        if what == "OFFSET" and value >= 0:
-            ENTRY_OFFSET = float(value)
-            return True, (f"VPMS entry offset {ENTRY_OFFSET:.1f} m per side ({2 * ENTRY_OFFSET:.0f} m apart; "
-                          f"needed {entry_offset_min():.1f} m; 0 = one entry point, then "
-                          f"{single_entry_time():.1f} s between an MC and an L+C)")
+        if what == "OFFSET":
+            ENTRY_OFFSET = None if value < 0 else float(value)
+            return True, (f"VPMS entry offset {entry_offset():.1f} m per side ({2 * entry_offset():.0f} m apart; "
+                          f"{'computed' if ENTRY_OFFSET is None else 'set'}; computed {entry_offset_min():.1f} m; "
+                          f"0 = one entry point, then {single_entry_time():.1f} s between an MC and an L+C)")
         if what == "TARGET" and value > 0:
             T_TARGET = float(value)
             return True, (f"VPMS target {T_TARGET:.0f} s: radius MC {arc_radius(False):.0f} m, "

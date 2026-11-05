@@ -1,7 +1,8 @@
 """ VPMS + TRAFFIC (+ ENERGY, FLIGHTLOG): a short run through the structure, without GUI.
 Run from the bluesky folder:  python plugins/thesis/tests/test_vpms.py [shared|speed] [eta_err_pct] [demand]
 Checks: every drone lands; merge and touchdown intervals; losses of separation (32 m / 7.62 m);
-L+C drones that had to leave their wing behind a multicopter. """
+L+C drones that had to leave their wing behind a multicopter; the descent on the direct leg (fastest rate,
+no faster than 2 m/s at low speed, exactly 40 m at the merge point) and the no-go zone (decision 05-11-2026). """
 import os, sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, ROOT); os.chdir(ROOT)
@@ -30,7 +31,9 @@ los_pairs, overshoot, max_radial, trans_on_arc, spawned = set(), 0.0, 0.0, set()
 sped_up, v_max_seen = set(), 0.0       # L+C leaders that sped up for an L+C behind them (decision 03-11-2026)
 braking_to_end = set()                 # L+C below stall because it brakes to the end of its arc (decision 04-11-2026)
 perf_seen = {}                         # BlueSky limits per type, as BlueSky uses them (decision 04-11-2026)
-print(f"Entry offset {V.ENTRY_OFFSET:.0f} m per side (needed {V.entry_offset_min():.1f} m); hand-over MC-MC "
+prev_alt, vs_fast, vrs_steps, merge_dev, seen_final = {}, 0.0, 0, 0.0, set()   # descent checks (05-11-2026)
+print(f"Entry offset {V.entry_offset():.1f} m per side (speed variant; computed {V.entry_offset_min():.1f} m); "
+      f"lane gap {V.GAP_MIN:.0f} m; arcs at {V.H_ARC[0]:.2f} / {V.H_ARC[1]:.2f} m; hand-over MC-MC "
       f"{V.handover_time(False, False):.1f} s, L+C-L+C {V.handover_time(True, True):.1f} s"
       + (f", L+C behind MC {V.handover_time(False, True):.1f} s" if V.VARIANT == "shared" else
          " (MC and L+C have their own entry points)"))
@@ -38,6 +41,17 @@ while bs.sim.simt < 4000 and not sc.done:
     bs.sim.step()
     n = bs.traf.ntraf
     spawned.update(bs.traf.id)
+    for i, acid in enumerate(bs.traf.id):                                  # descent checks (05-11-2026)
+        if vp.state[i] == V.DIRECT:
+            if acid in prev_alt:
+                rate = (prev_alt[acid] - float(bs.traf.alt[i])) / V.DT          # descent rate in this step
+                vs_fast = max(vs_fast, rate)
+                if rate > V.VS_DIRECT_MAX + 0.01 and bs.traf.gs[i] < V.K_VRS * V.V_IH[int(vp.is_lc[i])]:
+                    vrs_steps += 1
+            prev_alt[acid] = float(bs.traf.alt[i])
+        elif vp.state[i] == V.FINAL and acid not in seen_final:
+            seen_final.add(acid)                                          # just arrived at the merge point
+            merge_dev = max(merge_dev, abs(float(bs.traf.alt[i]) - V.H_MERGE))
     if n < 2:
         continue
     x, y = V.to_xy(bs.traf.lat, bs.traf.lon)
@@ -81,6 +95,7 @@ while bs.sim.simt < 4000 and not sc.done:
             sped_up.add(bs.traf.id[i])
             v_max_seen = max(v_max_seen, float(bs.traf.tas[i]))
 
+
 merge = np.diff([t for t, _ in vp.merges]); touch = np.diff([t for t, _ in vp.touchdowns])
 print(f"\nSimulated {bs.sim.simt:.0f} s; {len(spawned)} drones created, "
       f"{len(vp.touchdowns)} landed, {bs.traf.ntraf} still flying (expected 0)")
@@ -90,7 +105,12 @@ print(f"Arcs: overshoot to the inside {max(-overshoot, 0.0):.1f} m; largest devi
 print(f"Losses of separation (32 m and 7.62 m): {len(los_pairs)} pairs {sorted(los_pairs)[:6]}")
 print(f"L+C below stall on an arc (behind a slower or holding drone): {len(trans_on_arc)} {sorted(trans_on_arc)[:6]}")
 print(f"L+C below stall while braking to the end of its own arc (no drone ahead): {len(braking_to_end)}")
-print(f"L+C leaders that sped up to restore 64 m: {len(sped_up)} {sorted(sped_up)[:6]}; fastest {v_max_seen:.1f} m/s "
+print(f"Direct leg: fastest descent {vs_fast:.2f} m/s (at most {V.VS_FAST:.0f}); faster than {V.VS_DIRECT_MAX:.0f} m/s "
+      f"below {V.K_VRS} v_ih: {vrs_steps} steps (expected 0); height at the merge point off 40 m by at most {merge_dev:.2f} m")
+nd = [d for _, d in vp.nogo_delays]
+print(f"No-go zone: {len(nd)} clearances delayed" + (f", longest {max(nd):.1f} s, mean {np.mean(nd):.1f} s" if nd else "")
+      + f"; holds without a conflict-free descent: {len(vp.nogo_hold)} (expected 0)")
+print(f"L+C leaders that sped up to restore {V.GAP_MIN:.0f} m: {len(sped_up)} {sorted(sped_up)[:6]}; fastest {v_max_seen:.1f} m/s "
       f"(at most {V.V_LC_MAX} m/s)")
 
 for typ, (vmax, vsmin, vsmax, axmax, hmax) in sorted(perf_seen.items()):

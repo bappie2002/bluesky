@@ -28,7 +28,7 @@ more if the follower would close in while both follow their lane speeds (VPMS ha
 including one update step; before 4.0, 3.1, 4.9 and 3.1 s). A drone drawn closer
 is moved later by the generator (draw). In the speed variant an MC and an L+C use different entry
 points (50 m apart), so there is no rule between them. Bunches of arrivals are absorbed inside the
-structure: the lane rules restore 64 m, drones fly slower on the arc and hover at its end.
+structure: the lane rules restore GAP_MIN (48 m), drones fly slower on the arc and hover at its end.
 
 Needs VPMS (and ENERGY for the state of charge). Command:
   TRAFFIC demand seed [eta_err_pct] [pad] [warmup] [measure]
