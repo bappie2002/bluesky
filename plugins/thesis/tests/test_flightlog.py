@@ -33,15 +33,16 @@ bs.sim.step()
 def table(path, columns):
     rows = list(csv.DictReader(open(path)))
     print(f"\n{path}: {len(rows)} lines")
-    print("  " + "".join(f"{c:>12}" for c in columns))
+    w = {c: max([12] + [len(r[c]) + 2 for r in rows]) for c in columns}
+    print("  " + "".join(f"{c:>{w[c]}}" for c in columns))
     for r in rows:
-        print("  " + "".join(f"{r[c]:>12}" for c in columns))
+        print("  " + "".join(f"{r[c]:>{w[c]}}" for c in columns))
     return rows
 
 
 table("output/test/flights.csv", ["id", "config", "flight_time", "energy_wh", "wh_hover", "wh_rotor",
                                   "wh_wing", "wh_trans", "n_trans", "t_hover", "t_rotor", "t_wing"])
-table("output/test/flights.csv", ["id", "soc_start", "soc_end", "min_sep_m", "los_time"])
+table("output/test/flights.csv", ["id", "soc_start", "soc_end", "min_sep_m", "los_time", "n_los", "los_sev"])
 table("output/test/events.csv", ["t", "id", "event", "info", "mode", "tas", "soc", "energy_wh"])
 trace = list(csv.DictReader(open("output/test/trace.csv")))
 print(f"\noutput/test/trace.csv: {len(trace)} lines (3 drones x 120 s, so about 360)")
@@ -49,6 +50,7 @@ print(f"\noutput/test/trace.csv: {len(trace)} lines (3 drones x 120 s, so about 
 print("\nExpected:")
 print("  MC1: 9.94 Wh, all hover (t_hover 120 s), no events except spawn and end")  # 298.1 W x 120 s (step 1a, 20-10)
 print("  MC2: soc_start 0.5; hover until 60 s, then rotor; min_sep 13.7 m; los_end soon after 60 s")
+print("  MC1, MC2: n_los 1, los_sev 0.572 (13.7 m apart at the same height: 1 - 13.7 / 32); LC1: n_los 0, los_sev 0")
 print(f"  LC1: wing until 60 s, then rotor and hover; n_trans 1, wh_trans {energy.E_TRANS_J / 3600:.2f} Wh")
-print("  events: los_start for MC1 and MC2 at the start, los_end for both after 60 s")
+print("  events: los_start for MC1 and MC2 at the start, los_end for both after 60 s with 'severity 0.572 dh 13.7 m dv 0.00 m'")
 print("  All energy_wh = wh_hover + wh_rotor + wh_wing + wh_trans")

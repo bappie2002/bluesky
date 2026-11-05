@@ -62,13 +62,19 @@ wijziging alle vier opnieuw.
 - Commando: `FLIGHTLOG naam` schrijft naar de map `output/naam/`:
   - `flights.csv`: één regel per drone, als hij na de landing van het platform gaat.
     Tijden, SoC begin en eind, energie totaal en per modus (`wh_hover`, `wh_rotor`,
-    `wh_wing`, `wh_trans`), tijd per modus, aantal transities, kleinste afstand, tijd in LoS.
+    `wh_wing`, `wh_trans`), tijd per modus, aantal transities, kleinste horizontale afstand tot een drone die
+    minder dan 7,62 m verticaal verwijderd is (`min_sep_m`), tijd in LoS, aantal LoS-voorvallen (`n_los`) en de
+    hoogste LoS-ernst (`los_sev`) (besluit 05-11).
   - `events.csv`: één regel per gebeurtenis: `spawn`, wissel van modus (event = nieuwe
-    modus, info = oude), `los_start`/`los_end` (info = de andere drone), de events van VPMS
+    modus, info = oude), `los_start`/`los_end` (info = de andere drone; bij `los_end` ook de ernst en d_h en d_v
+    op het diepste punt), de events van VPMS
     en TRAFFIC (hieronder), `end`. Met de toestand op dat moment.
 - `FLIGHTLOG naam TRACE` schrijft daarnaast `trace.csv`: elke drone elke seconde
   (positie, snelheid, modus, vermogen, energie, SoC). Groot; alleen voor figuren en debuggen.
 - Verlies van separatie: dichter dan 32 m horizontaal én 7,62 m verticaal (Metropolis II, besluit 23-10).
+- LoS-ernst (besluit 05-11, de intrusion severity bij Scholtes; definitie daar nog te controleren): hoe diep de
+  beschermde cilinder wordt binnengedrongen, min(1 − d_h/32, 1 − d_v/7,62); 0 aan de rand, 1 op dezelfde plek. De
+  kleinste van de twee, omdat de drone eruit is zodra één van beide zijn minimum haalt. Per voorval de hoogste waarde.
 - Figuren en samenvatting: `python analysis/run_report.py ../bluesky/output/naam`
   (vanuit de map `experimenten`).
 
@@ -151,7 +157,7 @@ wijziging alle vier opnieuw.
 
 ### TRAFFIC
 - `TRAFFIC vraag seed [fout_%] [BASE|LONG] [inloop_s] [meet_s]`; standaard 3600 s inloop + 3600 s meten.
-- Poisson-aankomsten, gate uniform, 50/50 types, SoC uniform 40-80%, platformtijd 2 s + U(2, 6) s (LONG: 60 s).
+- Poisson-aankomsten, gate uniform, 50/50 types, SoC uniform 40-80%, platformtijd 6 s voor elke drone (besluit 05-11; was 2 s + U(2, 6) s) (LONG: 60 s).
 - Voorspellingsfout per drone: normaal verdeeld, standaardafwijking fout_% (niveaus 0, 5, 10, 20%; eigen aanname).
   Hoofdvergelijking zonder fout; separatie-analyse met alle niveaus.
 - Eigen random-stroom per grootheid uit één seed: alle varianten krijgen dezelfde drones.

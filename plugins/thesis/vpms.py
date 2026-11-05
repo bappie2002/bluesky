@@ -71,7 +71,7 @@ What a drone does (one state per drone):
           on the pad: a place where a drone can hover, so planned with K_SPACING (decision 05-11-2026;
           was SEP_V). This gives the minimum time between two landings (19.2 s with a pad time of 6 s;
           was 17.3 s).
-  PAD     on the pad for its pad time (2 s standing still + time to take it off), then deleted
+  PAD     on the pad for its pad time (6 s from TRAFFIC, decision 05-11-2026), then deleted
 
 Sequencing in this file is first-come-first-served (case C1): drones are cleared in the
 order in which they entered their arc, each at least T_TARGET after the previous one at

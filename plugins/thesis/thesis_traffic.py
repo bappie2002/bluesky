@@ -12,8 +12,8 @@ Disturbances (no wind in this study, decision 27-10-2026):
   - error in the predicted flight time to the merge point, per drone normally distributed
     with standard deviation ETA_ERR % (levels 0, 5, 10, 20 %; own assumption), cut at 3 sigma.
     Main comparison: 0 %. Separation analysis: all levels.
-  - pad time: 2 s standing still + U(2, 6) s to take the drone off (mean 6 s), in every run;
-    pad mode LONG: 60 s (Vlaskin et al. 2024), sensitivity case
+  - pad time: 6 s for every drone (decision 05-11-2026; was 2 s standing still + U(2, 6) s to take
+    it off, mean 6 s); pad mode LONG: 60 s (Vlaskin et al. 2024), sensitivity case
 
 Random numbers: every quantity has its own stream from one seed. The drones therefore
 depend only on (demand, seed): every mechanism, variant, R preset and error level gets
@@ -57,8 +57,9 @@ REPETITIONS = 100                      # seeds per setting (Song 2023); more if 
 WARMUP, MEASURE = 3600.0, 3600.0       # s
 SHARE_LC = 0.5
 SOC_RANGE = (0.40, 0.80)
-T_SETTLE = 2.0                         # s on the pad until the drone stands still
-T_WORKER = (2.0, 6.0)                  # s to take it off, uniform
+T_PAD_BASE = 6.0                       # s on the pad, the same for every drone (decision 05-11-2026; was
+                                       #    2 s standing still + U(2, 6) s to take it off). The random stream
+                                       #    "pad" stays in the list, so the other streams keep their draws
 T_PAD_LONG = 60.0                      # s, pad mode LONG
 TYPE = ("GMC", "GLC")                  # BlueSky types for MC and L+C (as in ENERGY): the generic drones of this
                                        # thesis, with their limits in BlueSky's OpenAP type file (decision 04-11-2026)
@@ -86,7 +87,6 @@ def draw(demand, seed, duration, pad="BASE", eta_pct=0.0, entry_key=None, handov
         times.append(t)
         t += rng["time"].exponential(3600 / demand)
     n = len(times)
-    worker = rng["pad"].uniform(*T_WORKER, size=n)
     gate = rng["gate"].integers(4, size=n)
     is_lc = rng["type"].random(n) < SHARE_LC
     times, last = np.array(times), {}
@@ -102,7 +102,7 @@ def draw(demand, seed, duration, pad="BASE", eta_pct=0.0, entry_key=None, handov
         gate=gate,
         is_lc=is_lc,
         soc=rng["soc"].uniform(*SOC_RANGE, size=n),
-        t_pad=np.full(n, T_PAD_LONG) if pad.upper() == "LONG" else T_SETTLE + worker,
+        t_pad=np.full(n, T_PAD_LONG if pad.upper() == "LONG" else T_PAD_BASE),
         eta_err=np.clip(rng["eta"].standard_normal(n), -3, 3) * eta_pct / 100,
     )
     order = np.argsort(plan["time"], kind="stable")      # a moved drone can pass a later one
