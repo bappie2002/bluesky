@@ -23,7 +23,8 @@ Geometry (methodology, Airspace Structure and Separation; decisions 22, 23 and 2
 What a drone does (one state per drone):
   ENTRY   entry point -> start of its arc, level, at the arc height. TRAFFIC hands drones over at the
           transit minimum (handover_time: SEP_H behind the previous drone at the same entry point, more
-          for a faster follower, decision 03-11-2026). Drones enter at their drawn time (option B):
+          for a faster follower, decision 03-11-2026; computed from both speed profiles, decision
+          04-11-2026, so also when the leader slows down to its arc speed). Drones enter at their drawn time (option B):
           bunches are absorbed in the structure, not before the gate
   ARC     along the arc at its waiting speed. No overtaking (decision 26-10-2026): a drone
           that closes in on the drone ahead on the same arc takes over its speed. For an
@@ -31,6 +32,9 @@ What a drone does (one state per drone):
           Decision 29-10-2026: entry leg and arc form one lane per arc; a follower keeps GAP_MIN
           (64 m = 2 x SEP_H) to the drone ahead, not T_TARGET (the 40 s is a wish at the merge point),
           and a drone that leaves for the merge point stays its leader until SEP_H + 5 m inside the arc.
+          The gap is always the straight-line distance between the two drones, as in the separation
+          check (decision 04-11-2026; before, the distance along the lane, which was wrong while a
+          drone cuts the corner onto its arc: 93 m or 23 m where the drones were 44 m apart)
           Restoring GAP_MIN after a tight hand-over (decision 03-11-2026, a structure rule in all cases):
           a multicopter follower falls back by flying slower; an L+C cannot (it flies just above stall),
           so the L+C ahead of it speeds up, to at most V_LC_MAX, until GAP_MIN is back. If that leader
@@ -42,7 +46,10 @@ What a drone does (one state per drone):
           that it arrives there in hover (an L+C finishes its transition before it). It brakes to a
           standstill on the merge point itself and only then counts as arrived (decision 04-11-2026;
           before, it counted as arrived within 3 m while it still flew 1.9 m/s, so it arrived about
-          2 s earlier than the sequencer had planned)
+          2 s earlier than the sequencer had planned). It brakes one update early, so that it does not
+          overshoot the point (decision 05-11-2026). The sequencer predicts the arrival by flying the
+          direct leg ahead with these same rules (predict_time): without prediction error the drone
+          arrives exactly when planned (T5, 05-11-2026; before, 0.6 to 2.9 s later)
   FINAL   vertical descent: 2 m/s down to 5 m, 0.5 m/s below that; never closer than
           SEP_V above the drone below it, also not above a drone that is still on the pad.
           This gives the minimum time between two landings (17.3 s with a pad time of 6 s).
@@ -139,7 +146,10 @@ DT = 0.5                      # s: update interval
 ENTRY, ARC, HOLD, DIRECT, FINAL, PAD = 1, 2, 3, 4, 5, 6
 STATE_NAMES = {0: "-", ENTRY: "entry", ARC: "arc", HOLD: "hold", DIRECT: "direct",
                FINAL: "final", PAD: "pad"}
-M_PER_DEG = 111320.0
+M_PER_DEG = np.radians(1.0) * aero.Rearth   # m per degree, from BlueSky's own earth radius (6371 km), so that
+                                            # VPMS metres are the metres BlueSky moves the drones by (decision
+                                            # 05-11-2026; was 111320, 0.11 % more, which made a drone on its
+                                            # direct leg arrive up to one update earlier than VPMS predicted)
 COSLAT = np.cos(np.radians(PAD_LAT))
 
 
@@ -225,15 +235,59 @@ def arc_start(g, is_lc):
     return offset_xy(g, is_lc, arc_start_along(is_lc))
 
 
+def handover_gap(h, lead_lc, foll_lc, dt_m=0.01):
+    """Smallest distance (m) along the lane between two drones of one entry point when the follower passes
+    that point h s after the leader (decision 04-11-2026: the worst case of the lane rules). Each flies its
+    own lane speeds: V_ENTRY until it starts the turn onto its arc (look_ahead + one step before the arc
+    start, as in update), then V_ARC, changing speed at A_DECEL / A_ACC. The follower flies no faster than
+    the leader flew DT earlier and reacts one update (DT) after it appears; the leader slows down at once.
+    Along the lane, not the straight line: on the entry leg the two are the same, and the smallest gap lies
+    there or just after the leader's turn, where the difference is small (checked with restoreprobe)."""
+    turn = [gate_distance() - arc_start_along(lc) - look_ahead(V_ENTRY[lc]) - V_ENTRY[lc] * DT for lc in (0, 1)]
+    n = int((h + 60.0) / dt_m) + 1
+    dec, acc = A_DECEL * dt_m, A_ACC * dt_m
+    lead, foll = int(lead_lc), int(foll_lc)
+    v, s = V_ENTRY[lead], 0.0
+    v_lead, s_lead = [0.0] * n, [0.0] * n
+    for k in range(n):                                   # leader, from the entry point at t = 0
+        v_lead[k], s_lead[k] = v, s
+        want = V_ENTRY[lead] if s < turn[lead] else V_ARC[lead]
+        v += max(-dec, min(acc, want - v))
+        s += v * dt_m
+    k0, kd = int(round(h / dt_m)), int(round(DT / dt_m))
+    v, s, g_min = V_ENTRY[foll], 0.0, np.inf
+    for k in range(k0, n):                               # follower, from the entry point at t = h
+        g_min = min(g_min, s_lead[k] - s)
+        if k >= k0 + kd:
+            want = min(V_ENTRY[foll] if s < turn[foll] else V_ARC[foll], v_lead[k - kd])
+            v += max(-dec, min(acc, want - v))
+        s += v * dt_m
+    return g_min
+
+
+_HANDOVER = {}  # handover_time per pair and geometry (it is asked for every drawn drone)
+
+
 def handover_time(lead_lc, foll_lc):
-    """Smallest time (s) between two drones at the same entry point (decision 03-11-2026). The transit
-    airspace only guarantees SEP_H: when the follower passes the entry point, the leader must be at least
-    SEP_H ahead. A faster follower (L+C behind MC, shared variant) also closes in while braking to the
-    leader's speed, and reacts one step late, so it needs SEP_H + dv^2 / (2 A_DECEL) + dv DT (about 40 m).
-    Plus DT: a drone is created at the first update after its drawn time."""
-    v_l, v_f = V_ENTRY[int(lead_lc)], V_ENTRY[int(foll_lc)]
-    dv = max(v_f - v_l, 0.0)
-    return (SEP_H + dv ** 2 / (2 * A_DECEL) + dv * DT) / v_l + DT
+    """Smallest time (s) between two drones at the same entry point (decisions 03-11 and 04-11-2026). The
+    transit airspace only guarantees SEP_H: when the follower passes the entry point, the leader must be at
+    least SEP_H ahead, and the follower must stay SEP_H behind while both follow their lane speeds
+    (handover_gap). That matters when the leader slows down: an MC slows from 9.0 to 5.7 m/s when it
+    turns onto its arc, so an L+C behind it (12.4 m/s, shared variant) must lose 6.7 m/s, not 3.4 m/s as in
+    the formula of 03-11-2026 (4.9 s, which gave 30.8 m in restoreprobe ML). Smallest h with
+    handover_gap >= SEP_H, to 0.01 s. Plus DT: a drone is created at the first update after its drawn time.
+    Shared variant: MC-MC 4.2 s, L+C-L+C 3.1 s, L+C behind MC 6.1 s, MC behind L+C 3.1 s."""
+    key = (bool(lead_lc), bool(foll_lc), VARIANT, T_TARGET, ENTRY_OFFSET, GATE_MARGIN, A_DECEL, A_ACC, DT, SEP_H)
+    if key not in _HANDOVER:
+        lo, hi = 0.0, 30.0
+        while hi - lo > 0.005:
+            mid = 0.5 * (lo + hi)
+            if handover_gap(mid, lead_lc, foll_lc) >= SEP_H:
+                hi = mid
+            else:
+                lo = mid
+        _HANDOVER[key] = round(hi, 2) + DT
+    return _HANDOVER[key]
 
 
 def to_xy(lat, lon):
@@ -274,6 +328,38 @@ def time_to_merge(dist, v):
     if dist > d_stop:
         return (dist - d_stop) / v + v / A_DECEL
     return np.sqrt(2 * dist / A_DECEL)
+
+
+def predict_time(dist, gs, v0=None, turn_deg=0.0):
+    """Predicted time (s) from now until VPMS sees the drone standing still on the merge point (decision
+    05-11-2026, T5). VPMS flies the direct leg ahead with its own rules, step by step (DT), as BlueSky does:
+      - every update the track points at the merge point and the speed is min(gs, sqrt(2 A_DECEL (d - v DT))):
+        braking one update early, so that the drone does not overshoot the point;
+      - BlueSky changes the speed by at most A_DECEL DT (A_ACC DT) per step and turns at most g tan(BANK) / v
+        rad/s (heading first, then position);
+      - arrival when the drone is within ARRIVE_R of the point and slower than ARRIVE_V, checked at updates.
+    So the prediction contains the speed change from v0 to gs (an MC cleared on its entry leg slows from 9.0
+    to 5.7 m/s; a drone in a hold speeds up from 0), the turn towards the merge point (an L+C on its arc
+    turns about 85 deg) and the update interval. Not in it: wind (none in this study) and waiting for a merge
+    point that is not free (the sequencer plans T_TARGET apart). v0 None: already at gs and on track.
+    The drone starts at (0, 0) with its track turn_deg away from the merge point at (0, dist)."""
+    v = gs if v0 is None else float(v0)
+    px, py, hdg, t = 0.0, 0.0, np.radians(min(abs(turn_deg), 180.0)), 0.0
+    c_v, c_hdg = 0.0, 0.0
+    g_tan = 9.81 * np.tan(np.radians(BANK))
+    for _ in range(4000):
+        d = np.hypot(px, dist - py)
+        if d < ARRIVE_R and v < ARRIVE_V:                            # VPMS update: arrived?
+            return t
+        c_hdg = np.arctan2(-px, dist - py)                           # VPMS update: commands
+        c_v = min(gs, np.sqrt(2 * A_DECEL * max(d - v * DT, 0.0)))
+        v += max(-A_DECEL * DT, min(A_ACC * DT, c_v - v))            # BlueSky step: speed,
+        rate = g_tan / max(v, 1e-6) * DT
+        hdg += max(-rate, min(rate, (c_hdg - hdg + np.pi) % (2 * np.pi) - np.pi))   # heading,
+        px += v * DT * np.sin(hdg)                                   # position
+        py += v * DT * np.cos(hdg)
+        t += DT
+    return t
 
 
 def follow_speed(gap, v_lead, v_own):
@@ -521,13 +607,10 @@ class Vpms(core.Entity):
             lead, gap = None, np.inf
             if ahead_entry:                                    # nearest drone ahead on the entry leg
                 lead = max(ahead_entry, key=lambda j: d_start[j])
-                gap = d - d_start[lead]
             elif ahead_arc:                                    # last drone that entered the arc
                 lead = min(ahead_arc, key=lambda j: progress[j])
-                gap = d + arc_radius(lc) * np.radians(progress[lead])
-                if progress[lead] < 1.0:                       # still turning in: straight-line distance
-                    gap = np.hypot(x[lead] - x[i], y[lead] - y[i])
             if lead is not None:
+                gap = np.hypot(x[lead] - x[i], y[lead] - y[i])  # straight line (decision 04-11-2026)
                 v_lead = 0.0 if self.state[lead] == HOLD else traf.tas[lead]
                 v = self.lane_speed(i, lead, gap, v_lead, v, restore)
             v = self.departing_limit(i, idx, x, y, dist, v)
@@ -566,9 +649,10 @@ class Vpms(core.Entity):
                 v = min(v, np.sqrt(2 * A_DECEL * d_own))       # can always stop at the end of its arc
                 if rank > 0:                                   # drone ahead on the same arc
                     lead = members[rank - 1]
-                    # straight-line distance (chord), as in the separation check; on these radii it is
-                    # at most 0.4 m shorter than the distance along the arc (decision 29-10-2026)
-                    gap = 2 * r * np.sin(np.radians(progress[lead] - progress[i]) / 2)
+                    # straight-line distance, as in the separation check (decision 04-11-2026; before,
+                    # the chord from the progress along the arc, which is the same on the circle but
+                    # wrong while a drone still turns in onto it)
+                    gap = np.hypot(x[lead] - x[i], y[lead] - y[i])
                     v_lead = 0.0 if self.state[lead] == HOLD else traf.tas[lead]
                     v = self.lane_speed(i, lead, gap, v_lead, v, restore)
                     if self.state[lead] == ARC:                # the leader will stop at the end of the
@@ -599,9 +683,8 @@ class Vpms(core.Entity):
         i = self.next_clearance(idx)
         if i is not None:
             gs = self.cruise_gs(i, -y[i] / dist[i], -x[i] / dist[i])
-            t = time_to_merge(dist[i], gs)                         # to a standstill on the merge point
-            dv = max(gs - traf.gs[i], 0.0)                         # speeding up (from a hold: from 0):
-            t += dv ** 2 / (2 * A_ACC * max(gs, 0.1))              # time lost against flying at gs all the way
+            turn = abs((traf.hdg[i] - np.degrees(np.arctan2(-x[i], -y[i])) + 180) % 360 - 180)
+            t = predict_time(dist[i], gs, traf.tas[i], turn)      # until it stands still on the merge point
             t_pred = t * (1 + self.eta_err[i])                     # what the sequencer believes
             if now + t_pred >= self.t_last_merge + T_TARGET + DT:  # + DT: update interval
                 self.state[i] = DIRECT
@@ -624,7 +707,10 @@ class Vpms(core.Entity):
             stop = 0.0                                            # brake to a standstill on the point itself
             if busy_merge or any(self.state[j] == DIRECT and dist[j] < dist[i] for j in idx if j != i):
                 stop = SEP_H + 3.0     # hard minimum: wait SEP_H from a merge point that is not free
-            v = min(self.cruise_gs(i, un, ue), np.sqrt(2 * A_DECEL * max(dist[i] - stop, 0.0)))
+            # brake one update early: the speed set now holds for DT, so a drone that brakes on the curve
+            # sqrt(2 a d) itself starts up to DT late and overshoots the point (decision 05-11-2026, T5)
+            v = min(self.cruise_gs(i, un, ue),
+                    np.sqrt(2 * A_DECEL * max(dist[i] - stop - traf.gs[i] * DT, 0.0)))
             self.fly_ground(i, v * un, v * ue)
             # keep the arc height until SEP_H + 5 m inside the arc: a drone from an upper arc then
             # passes over the neighbouring lower arc with the full 10 m between them

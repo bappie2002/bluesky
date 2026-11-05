@@ -31,8 +31,9 @@ sped_up, v_max_seen = set(), 0.0       # L+C leaders that sped up for an L+C beh
 braking_to_end = set()                 # L+C below stall because it brakes to the end of its arc (decision 04-11-2026)
 perf_seen = {}                         # BlueSky limits per type, as BlueSky uses them (decision 04-11-2026)
 print(f"Entry offset {V.ENTRY_OFFSET:.0f} m per side (needed {V.entry_offset_min():.1f} m); hand-over MC-MC "
-      f"{V.handover_time(False, False):.1f} s, L+C-L+C {V.handover_time(True, True):.1f} s, "
-      f"L+C behind MC {V.handover_time(False, True):.1f} s")
+      f"{V.handover_time(False, False):.1f} s, L+C-L+C {V.handover_time(True, True):.1f} s"
+      + (f", L+C behind MC {V.handover_time(False, True):.1f} s" if V.VARIANT == "shared" else
+         " (MC and L+C have their own entry points)"))
 while bs.sim.simt < 4000 and not sc.done:
     bs.sim.step()
     n = bs.traf.ntraf

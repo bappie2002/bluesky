@@ -79,7 +79,9 @@ wijziging alle vier opnieuw.
 - Straal = 2 × 40 s × wachtsnelheid / 150°: `VPMS SHARED` één boog per gate (380 m, L+C bepaalt),
   `VPMS SPEED` per gate een MC-boog (174 m) en een L+C-boog (380 m). `VPMS SHOW` tekent ze.
   `VPMS TARGET 35` zet het doel op 35 s (de straal volgt mee); vóór het verkeer.
-- Per drone: entry → boog → (hover aan het eind) → direct naar het merge point (komt in hover aan; telt pas als aangekomen bij stilstand op het merge point zelf, binnen 0,5 m en onder 0,5 m/s, `ARRIVE_R`, `ARRIVE_V`, besluit 04-11)
+- Per drone: entry → boog → (hover aan het eind) → direct naar het merge point (komt in hover aan; telt pas als aangekomen bij stilstand op het merge point zelf, binnen 0,5 m en onder 0,5 m/s, `ARRIVE_R`, `ARRIVE_V`, besluit 04-11). Remt een update eerder af, zodat hij niet voorbij het merge point schiet (besluit 05-11).
+- Voorspelde aankomst (besluit 05-11, `predict_time`): de sequencer vliegt het directe stuk vooruit met dezelfde regels als de drone: elke 0,5 s koers op het merge point en snelheid `min(gs, sqrt(2 a (d - v DT)))`, BlueSky verandert de snelheid met hoogstens 0,93 m/s² en draait met hoogstens g tan 25° / v. Daarmee zitten de snelheidsverandering (MC van 9,0 naar 5,7 m/s, versnellen uit een hold), de bocht vanaf de boog en het update-interval erin. Zonder voorspellingsfout komt elke drone precies op het geplande moment aan (T5). Eerst: een formule zonder bocht en zonder update-interval, 0,6 tot 2,9 s te laat.
+- Meters: VPMS rekent met de aardstraal van BlueSky (6371 km, 111 195 m per graad; besluit 05-11), zodat de meters van VPMS dezelfde zijn als waarmee BlueSky de drones verplaatst. Eerst 111 320 m per graad, 0,11 % meer.
   → verticaal dalen (2 m/s tot 5 m, dan 0,5 m/s) → platform (2 s + tijd om hem eraf te halen) → weg.
 - Boog volgen: de drone mikt op een punt een vooruitkijkafstand verder op de boog (2 × draaicirkel),
   en begint zijn bocht de boog op op die afstand. Zo schiet hij niet door.
@@ -88,17 +90,23 @@ wijziging alle vier opnieuw.
   geen regel in de rijstrook (`ARC_SPACING`, `VPMS DISTANCE`; `VPMS TIME` geeft de oude regel voor de
   vergelijking). Een drone die de boog verlaat blijft voorganger tot hij 37 m binnen de boog is, en een
   volger kan altijd 64 m vóór het eind van de boog stoppen. L+C achter een MC: van de vleugel af.
+  De afstand tot de voorganger is altijd de rechte afstand tussen de twee drones, net als bij de
+  separatiecheck (besluit 04-11). Eerst was het de afstand langs de rijstrook, en die klopte niet zolang een drone
+  de bocht de boog op afsnijdt (93 m of 23 m waar ze 44 m uit elkaar waren).
 - 64 m herstellen na een krappe overdracht (besluit 03-11, structuurregel, geldt in alle cases): een MC-volger valt terug
   (vliegt langzamer); een L+C kan dat niet (vliegt net boven stall), dus de L+C vóór hem loopt uit tot hoogstens
-  `V_LC_MAX` = 16,7 m/s (kruissnelheid DeltaQuad Pro, ijkpunt van het vleugelmodel) tot de 64 m terug is; de volger
+  `V_LC_MAX` = 15,4 m/s (hoogste snelheid in Metropolis II, besluit 04-11; was 16,7 m/s) tot de 64 m terug is; de volger
   vliegt dan niet sneller dan zijn voorganger (`lane_speed`). Heeft de voorganger geen ruimte, dan valt de volger
   terug (en gaat van zijn vleugel af). Een vertrekkende voorganger remt een volger alleen af zolang die hem inloopt.
   Events `speedup` en `speedup_end`.
 - Geen wachten vóór de gate (optie B, besluit 29-10): drones komen op hun getrokken tijd binnen; drukte
   wordt in de structuur opgevangen. Overdracht (besluit 03-11): het transitminimum per ingangspunt, `handover_time()`:
-  de vorige drone zit minstens 32 m voor; een snellere volger (L+C achter MC, gedeelde bogen) ongeveer 40 m, want hij
-  loopt in terwijl hij afremt. Plus 0,5 s (een drone wordt bij de eerstvolgende stap gemaakt). MC-MC 4,0 s, L+C-L+C 3,1 s,
-  L+C achter MC 4,9 s, MC achter L+C 3,1 s.
+  de vorige drone zit minstens 32 m voor, en de volger blijft 32 m achter terwijl beide hun eigen rijstrooksnelheden
+  vliegen (besluit 04-11, `handover_gap()`): de voorganger remt bij zijn bocht de boog op af naar zijn boogsnelheid,
+  de volger vliegt niet sneller dan de voorganger een stap eerder en reageert een stap later. Kleinste tijd tot op
+  0,01 s, plus 0,5 s (een drone wordt bij de eerstvolgende stap gemaakt). MC-MC 4,2 s, L+C-L+C 3,1 s,
+  L+C achter MC 6,1 s, MC achter L+C 3,1 s (was 4,0, 3,1, 4,9 en 3,1 s; de 4,9 s gaf 30,8 m in restoreprobe ML,
+  want de MC remt op zijn boog af van 9,0 naar 5,7 m/s).
 - Harde minima: nooit binnen 7,62 m boven de drone eronder (ook boven een drone op het platform);
   het merge point is pas vrij als de drone eronder 7,62 m lager is; anders wacht de volgende op 35 m.
 - FCFS: vrijgegeven in volgorde van binnenkomst op de boog, ten minste 40 s na de vorige bij het merge

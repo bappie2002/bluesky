@@ -23,8 +23,9 @@ Arrivals at the gate (decision 29-10-2026, option B): every drone passes its ent
 drawn time; there is no waiting before the gate, because what happens in the transit airspace is
 outside the model. The only rule at the hand-over (decision 03-11-2026): the transit minimum. When
 a drone passes its entry point, the previous drone at that point is at least SEP_H (32 m) ahead,
-more if the follower is faster (VPMS handover_time: MC behind MC 4.0 s, L+C behind L+C 3.1 s,
-L+C behind MC 4.9 s, MC behind L+C 3.1 s, each including one update step). A drone drawn closer
+more if the follower would close in while both follow their lane speeds (VPMS handover_time, decision
+04-11-2026: MC behind MC 4.2 s, L+C behind L+C 3.1 s, L+C behind MC 6.1 s, MC behind L+C 3.1 s, each
+including one update step; before 4.0, 3.1, 4.9 and 3.1 s). A drone drawn closer
 is moved later by the generator (draw). In the speed variant an MC and an L+C use different entry
 points (50 m apart), so there is no rule between them. Bunches of arrivals are absorbed inside the
 structure: the lane rules restore 64 m, drones fly slower on the arc and hover at its end.
