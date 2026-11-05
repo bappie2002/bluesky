@@ -98,6 +98,10 @@ wijziging alle vier opnieuw.
   `V_LC_MAX` = 15,4 m/s (hoogste snelheid in Metropolis II, besluit 04-11; was 16,7 m/s) tot de 64 m terug is; de volger
   vliegt dan niet sneller dan zijn voorganger (`lane_speed`). Heeft de voorganger geen ruimte, dan valt de volger
   terug (en gaat van zijn vleugel af). Een vertrekkende voorganger remt een volger alleen af zolang die hem inloopt.
+  De voorganger loopt pas uit als hij op zijn boog is, niet op het aanvliegstuk (besluit 05-11): bij 15,4 m/s zou zijn
+  vooruitkijkafstand voor de bocht de boog op 104 m zijn, langer dan het aanvliegstuk van 100 m, en zijn bochtstraal
+  52 m in plaats van 34 m. Op het aanvliegstuk houdt de volger de snelheid van de voorganger aan (beide 12,4 m/s),
+  dus de afstand blijft gelijk tot de voorganger op zijn boog is.
   Events `speedup` en `speedup_end`.
 - Geen wachten vóór de gate (optie B, besluit 29-10): drones komen op hun getrokken tijd binnen; drukte
   wordt in de structuur opgevangen. Overdracht (besluit 03-11): het transitminimum per ingangspunt, `handover_time()`:
@@ -110,7 +114,8 @@ wijziging alle vier opnieuw.
 - Harde minima: nooit binnen 7,62 m boven de drone eronder (ook boven een drone op het platform);
   het merge point is pas vrij als de drone eronder 7,62 m lager is; anders wacht de volgende op 35 m.
 - FCFS: vrijgegeven in volgorde van binnenkomst op de boog, ten minste 40 s na de vorige bij het merge
-  point. Een latere SEQUENCER-plugin vervangt alleen `next_clearance()`.
+  point (gepland). Precies 40 s: de marge van 0,5 s die er eerst bovenop zat (voor de oude formule) is weg
+  (besluit 05-11), want de voorspelling is nu exact. Een latere SEQUENCER-plugin vervangt alleen `next_clearance()`.
 - Verstoring: de sequencer plant met een voorspelde vliegtijd naar het merge point met een fout per drone
   (van TRAFFIC); de drone vliegt de echte tijd. Daardoor wijken de echte intervallen af van de geplande.
 - Op het direct-been houdt een drone zijn boog-hoogte tot 37 m binnen de boog, zodat hij over de

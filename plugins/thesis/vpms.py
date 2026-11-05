@@ -38,7 +38,12 @@ What a drone does (one state per drone):
           Restoring GAP_MIN after a tight hand-over (decision 03-11-2026, a structure rule in all cases):
           a multicopter follower falls back by flying slower; an L+C cannot (it flies just above stall),
           so the L+C ahead of it speeds up, to at most V_LC_MAX, until GAP_MIN is back. If that leader
-          has no room ahead, the follower falls back after all (and leaves its wing)
+          has no room ahead, the follower falls back after all (and leaves its wing).
+          The leader speeds up only on its arc, not on its entry leg (decision 05-11-2026): at 15.4 m/s its
+          look-ahead for the turn onto the arc would be 104 m, longer than the 100 m entry leg, and its
+          turn radius 52 m instead of 34 m, so the turn-in would no longer be the one handover_time
+          assumes. On the entry leg the follower keeps the leader's speed (12.4 m/s for both), so the gap
+          stays as it is until the leader is on its arc
   HOLD    hover at the end of the arc while not cleared (as in Chang et al.). The drone ahead brakes to a
           standstill at the end of its arc (A_DECEL) and then hovers (decision 04-11-2026; before, it
           stopped there at once, which BlueSky could only do with its own, higher acceleration)
@@ -57,7 +62,8 @@ What a drone does (one state per drone):
 
 Sequencing in this file is first-come-first-served (case C1): drones are cleared in the
 order in which they entered their arc, each at least T_TARGET after the previous one at
-the merge point. A later SEQUENCER plugin only has to replace next_clearance().
+the merge point (planned; exactly T_TARGET, without the buffer of one update used before
+05-11-2026). A later SEQUENCER plugin only has to replace next_clearance().
 
 Disturbance (decision 27-10-2026: no wind in this study): every drone has its own error in
 the predicted flight time to the merge point (eta_err, drawn by TRAFFIC). The sequencer plans
@@ -489,7 +495,9 @@ class Vpms(core.Entity):
     def restore_flags(self, idx, x, y, progress, d_start):
         """Decision 03-11-2026: which L+C leaders must speed up. Per lane the drones in order (entry leg:
         minus the distance to the arc start; arc: distance along the arc); an L+C (ENTRY or ARC) whose
-        follower is an L+C closer than GAP_MIN (straight line) speeds up for it."""
+        follower is an L+C closer than GAP_MIN (straight line) speeds up for it. A leader on its entry leg
+        is flagged too, so that its follower does not fall back, but it speeds up only once it is on its
+        arc (decision 05-11-2026, see update)."""
         lanes = {}
         for i in idx:
             if self.state[i] == ENTRY:
@@ -598,7 +606,7 @@ class Vpms(core.Entity):
             lc = int(self.is_lc[i])
             tx, ty = arc_start(self.gate[i], lc)
             d = d_start[i]
-            v = V_LC_MAX if i in restore else V_ENTRY[lc]
+            v = V_ENTRY[lc]                    # no speeding up on the entry leg (decision 05-11-2026)
             key = arc_key(self.gate[i], self.is_lc[i])
             ahead_entry = [j for j in entry if j != i and arc_key(self.gate[j], self.is_lc[j]) == key
                            and d_start[j] < d]
@@ -686,7 +694,9 @@ class Vpms(core.Entity):
             turn = abs((traf.hdg[i] - np.degrees(np.arctan2(-x[i], -y[i])) + 180) % 360 - 180)
             t = predict_time(dist[i], gs, traf.tas[i], turn)      # until it stands still on the merge point
             t_pred = t * (1 + self.eta_err[i])                     # what the sequencer believes
-            if now + t_pred >= self.t_last_merge + T_TARGET + DT:  # + DT: update interval
+            # exactly T_TARGET: the prediction is exact and lies on the update grid (decision 05-11-2026;
+            # before, + DT as a buffer for the old formula, which made the smallest interval 40.5 s)
+            if now + t_pred >= self.t_last_merge + T_TARGET - 1e-6:
                 self.state[i] = DIRECT
                 self.t_merge[i] = self.t_last_merge = now + t_pred
                 self.vs_direct[i] = max(traf.alt[i] - H_MERGE, 0.0) / t
