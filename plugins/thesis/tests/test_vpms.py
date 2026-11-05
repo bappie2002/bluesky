@@ -1,5 +1,6 @@
 """ VPMS + TRAFFIC (+ ENERGY, FLIGHTLOG): a short run through the structure, without GUI.
-Run from the bluesky folder:  python plugins/thesis/tests/test_vpms.py [shared|speed] [eta_err_pct] [demand]
+Run from the bluesky folder:  python plugins/thesis/tests/test_vpms.py [shared|speed] [eta_err_pct] [demand] [target_s]
+(target_s: VPMS TARGET, default 40; the structure must stay the one for 40 s, decision 05-11-2026)
 Checks: every drone lands; merge and touchdown intervals; losses of separation (32 m / 7.62 m);
 L+C drones that had to leave their wing behind a multicopter; the descent on the direct leg (fastest rate,
 no faster than 2 m/s at low speed, exactly 40 m at the merge point) and the no-go zone (decision 05-11-2026). """
@@ -12,9 +13,10 @@ import bluesky as bs
 variant = sys.argv[1] if len(sys.argv) > 1 else "shared"
 eta = sys.argv[2] if len(sys.argv) > 2 else "0"
 demand = sys.argv[3] if len(sys.argv) > 3 else "60"
+target = sys.argv[4] if len(sys.argv) > 4 else "40"
 bs.init(mode="sim", detached=True)
 for cmd in ["DT 0.5", "PLUGINS LOAD ENERGY", "PLUGINS LOAD FLIGHTLOG", "PLUGINS LOAD VPMS",
-            "PLUGINS LOAD TRAFFIC", f"VPMS {variant}", f"FLIGHTLOG vpms_{variant}",
+            "PLUGINS LOAD TRAFFIC", f"VPMS {variant}", f"VPMS TARGET {target}", f"FLIGHTLOG vpms_{variant}",
             f"TRAFFIC {demand} 1 {eta} BASE 300 600"]:
     bs.stack.stack(cmd)
 bs.sim.step()
@@ -24,7 +26,8 @@ mods = {"vpms": plugin_module("vpms", "Vpms"), "thesis_traffic": plugin_module("
         "energy": plugin_module("energy", "Energy")}
 vp, sc, en = mods["vpms"].Vpms.implinstance(), mods["thesis_traffic"].Traffic.implinstance(), mods["energy"].Energy.implinstance()
 V = mods["vpms"]
-print(f"Variant {variant}, prediction error {eta} %, {demand} drones/h: radius MC {V.arc_radius(False):.0f} m, "
+print(f"Variant {variant}, prediction error {eta} %, {demand} drones/h, target {V.T_TARGET:g} s "
+      f"(structure designed for {V.T_DESIGN:g} s): radius MC {V.arc_radius(False):.0f} m, "
       f"L+C {V.arc_radius(True):.0f} m, gates at {V.gate_distance():.0f} m")
 
 los_pairs, overshoot, max_radial, trans_on_arc, spawned = set(), 0.0, 0.0, set(), set()

@@ -8,14 +8,16 @@ Geometry (methodology, Airspace Structure and Separation; decisions 22, 23 and 2
   - per gate an arc of 150 deg around the pad, flown clockwise, at 100 m (gates 0 and 2)
     or 88.57 m (gates 1 and 3): neighbouring arcs overlap 60 deg and lie K_SPACING x SEP_V = 11.43 m
     apart vertically (decision 05-11-2026; was 90 m, 10 m apart)
-  - arc radius r = 2 T_target V / theta: an arc absorbs two target separations
+  - arc radius r = 2 T_DESIGN V / theta: an arc absorbs two target separations of the design target, 40 s.
+    The structure is fixed (decision 05-11-2026): VPMS TARGET changes only the target at the merge point
+    (the clearance), not the radius, the gates or the entry points
       VARIANT "shared": one arc per gate for both types, radius set by the L+C (379 m)
       VARIANT "speed":  per gate an MC arc (174 m) and an L+C arc (379 m), same height
   - entry points (decision 03-11-2026): in the speed variant every gate has two entry points,
     entry_offset() (about 27 m) to either side of the gate's radial line, about 55 m apart: the MC on the
     counter-clockwise side, the L+C on the clockwise side, the side to which it turns onto its arc,
     so it never crosses the MC's line. Both fly a line parallel to the radial to their arc, which
-    therefore starts a few degrees from the gate bearing (arc_start_bearing: MC -8.3, L+C +3.8 deg).
+    therefore starts a few degrees from the gate bearing (arc_start_bearing: MC -9.1, L+C +4.1 deg with the computed offset).
     The offset is computed (entry_offset_min, decision 05-11-2026; was 25 m): the direct leg of an L+C
     cleared at its arc start converges on the merge point, and must stay K_SPACING x SEP_H (48 m) from the
     MC's line until it is K_SPACING x SEP_V (11.43 m) lower: a line planned into the structure, like the
@@ -93,7 +95,8 @@ Before, they were the DJI M200 and the Amazon octocopter of that file, with thei
 Drones are handed to VPMS by the TRAFFIC plugin (register); other drones are ignored.
 Events for FLIGHTLOG: arc_in, hold, direct_to, merge, touchdown, speedup, speedup_end.
 Commands: VPMS SHOW (draw the structure), VPMS SHARED / VPMS SPEED (variant, before traffic),
-          VPMS TARGET 40 (target separation in s, before traffic; the arc radius follows it),
+          VPMS TARGET 40 (target separation at the merge point in s, before traffic; the structure stays the
+          one designed for T_DESIGN = 40 s, decision 05-11-2026),
           VPMS OFFSET 25 (side offset of each entry point in m, speed variant; 0 = one shared entry
           point, the design of 29-10-2026; before traffic),
           VPMS TIME / VPMS DISTANCE (spacing a follower keeps in its lane, ARC_SPACING).
@@ -131,7 +134,11 @@ H_MERGE = 40.0                # m: merge point, straight above the pad
 GATE_BEARINGS = (0.0, 90.0, 180.0, 270.0)
 ARC_DEG = 150.0               # arc extent (deg)
 ARC_DIR = 1                   # 1 = clockwise seen from above
-T_TARGET = 40.0               # s: target separation at the merge point (arc entry only measured)
+T_TARGET = 40.0               # s: target separation at the merge point (arc entry only measured); VPMS TARGET
+                              #    changes it for the sensitivity analysis
+T_DESIGN = 40.0               # s: target the structure is designed for (decision 05-11-2026): the arc radius, and
+                              #    with it the gates and the entry points, follow from it and stay fixed when
+                              #    VPMS TARGET changes T_TARGET (before, the radius followed T_TARGET)
 LC_TYPES = {"GLC"}            # BlueSky types that are Lift+Cruise (same as ENERGY)
 V_ARC = (MC.v_endurance, LC.v_arc)    # m/s waiting speed (MC v_e 5.7, L+C 1.05 Vstall 12.4)
 V_ENTRY = (MC.v_range, LC.v_arc)      # m/s from gate to arc (MC v_r 9.0, L+C on the wing): fixed for now,
@@ -195,9 +202,10 @@ COSLAT = np.cos(np.radians(PAD_LAT))
 # GEOMETRY
 # =============================================================================
 def arc_radius(is_lc):
-    """Arc radius (m): two target separations at the waiting speed over 150 deg."""
+    """Arc radius (m): two design targets (T_DESIGN, 40 s) at the waiting speed over 150 deg. Fixed: it does not
+    follow T_TARGET (decision 05-11-2026)."""
     v = V_ARC[1] if VARIANT == "shared" else V_ARC[int(is_lc)]
-    return 2 * T_TARGET * v / np.radians(ARC_DEG)
+    return 2 * T_DESIGN * v / np.radians(ARC_DEG)
 
 
 def gate_distance():
@@ -214,7 +222,7 @@ def clear_distance():
     in flight (descent_heights), on the radial line, with only the neighbouring arcs as constraint: from an
     upper arc it keeps its height until SEP_H inside, from a lower arc it descends at once. The larger of the
     two (was: SEP_H inside, then 2 m/s at most)."""
-    key = (VARIANT, T_TARGET, K_SPACING, H_MERGE)
+    key = (VARIANT, T_DESIGN, K_SPACING, H_MERGE)
     if key not in _CLEAR:
         r = arc_radius(True)
         px, py, pv = direct_path(0.0, r, V_ARC[1], 180.0, V_DIRECT[1])
@@ -237,7 +245,7 @@ def single_entry_time():
     speed variant, an MC and a following L+C fly the same line inwards, at the same height, and the L+C is
     faster. Smallest time (s) between them at the gate so that the L+C stays SEP_H behind until it leaves
     the line:  A. it turns onto its arc (look_ahead before the arc start);  B. it is cleared at once and
-    flies direct along the same line until it is SEP_V lower (clear_distance()). B binds: about 9.7 s."""
+    flies direct along the same line until it is SEP_V lower (clear_distance()). B binds: about 9.4 s (9.7 s with the descent before 05-11-2026)."""
     v_mc, v_lc = V_ENTRY[0], V_ENTRY[1]
     s_a = max(GATE_MARGIN - look_ahead(v_lc) - v_lc * DT, 0.0)           # m from the gate
     s_b = gate_distance() - clear_distance()
@@ -341,7 +349,7 @@ def handover_time(lead_lc, foll_lc):
     the formula of 03-11-2026 (4.9 s, which gave 30.8 m in restoreprobe ML). Smallest h with
     handover_gap >= SEP_H, to 0.01 s. Plus DT: a drone is created at the first update after its drawn time.
     Shared variant: MC-MC 4.2 s, L+C-L+C 3.1 s, L+C behind MC 6.1 s, MC behind L+C 3.1 s."""
-    key = (bool(lead_lc), bool(foll_lc), VARIANT, T_TARGET, ENTRY_OFFSET, GATE_MARGIN, A_DECEL, A_ACC, DT, SEP_H, K_SPACING)
+    key = (bool(lead_lc), bool(foll_lc), VARIANT, T_DESIGN, ENTRY_OFFSET, GATE_MARGIN, A_DECEL, A_ACC, DT, SEP_H, K_SPACING)
     if key not in _HANDOVER:
         lo, hi = 0.0, 30.0
         while hi - lo > 0.005:
@@ -454,7 +462,7 @@ _FLOWS = {}  # flows per geometry
 def flows():
     """Every flow in the structure: (gate, is_lc, height, kind, geometry) for each arc (radius, start bearing)
     and each entry leg (entry point, arc start). Decision 05-11-2026, for the descent plan."""
-    key = (VARIANT, T_TARGET, ENTRY_OFFSET, K_SPACING, GATE_MARGIN)
+    key = (VARIANT, T_DESIGN, ENTRY_OFFSET, K_SPACING, GATE_MARGIN)
     if key not in _FLOWS:
         out = []
         for g in range(len(GATE_BEARINGS)):
@@ -989,8 +997,9 @@ class Vpms(core.Entity):
                           f"0 = one entry point, then {single_entry_time():.1f} s between an MC and an L+C)")
         if what == "TARGET" and value > 0:
             T_TARGET = float(value)
-            return True, (f"VPMS target {T_TARGET:.0f} s: radius MC {arc_radius(False):.0f} m, "
-                          f"L+C {arc_radius(True):.0f} m, gates at {gate_distance():.0f} m")
+            return True, (f"VPMS target {T_TARGET:g} s at the merge point; structure fixed, designed for "
+                          f"{T_DESIGN:g} s: radius MC {arc_radius(False):.0f} m, L+C {arc_radius(True):.0f} m, "
+                          f"gates at {gate_distance():.0f} m")
         if what in ("SHARED", "SPEED"):
             VARIANT = what.lower()
             return True, (f"VPMS variant {VARIANT}: radius MC {arc_radius(False):.0f} m, "
