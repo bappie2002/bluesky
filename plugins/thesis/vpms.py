@@ -4,7 +4,9 @@ Geometry (methodology, Airspace Structure and Separation; decisions 22, 23 and 2
   - landing pad at PAD_LAT, PAD_LON; merge point 40 m straight above it
   - four gates on the bearings 0, 90, 180 and 270 deg, each at the height of its own arc
     (decision 29-10-2026: drones descend from the transit airspace before the gate), GATE_MARGIN
-    outside the outer arc, so the entry leg is level
+    outside the outer arc, so the entry leg is level. Decision 06-11-2026: GATE_MARGIN from a design check
+    (entryprobe), long enough that the lane rules open every hand-over gap to GAP_MIN before the drone ahead
+    slows down at its arc (was 100 m)
   - per gate an arc of 150 deg around the pad, flown clockwise, at 100 m (gates 0 and 2)
     or 88.57 m (gates 1 and 3): neighbouring arcs overlap 60 deg and lie K_SPACING x SEP_V = 11.43 m
     apart vertically (decision 05-11-2026; was 90 m, 10 m apart)
@@ -29,7 +31,13 @@ What a drone does (one state per drone):
           transit minimum (handover_time: SEP_H behind the previous drone at the same entry point, more
           for a faster follower, decision 03-11-2026; computed from both speed profiles, decision
           04-11-2026, so also when the leader slows down to its arc speed). Drones enter at their drawn time (option B):
-          bunches are absorbed in the structure, not before the gate
+          bunches are absorbed in the structure, not before the gate.
+          Safety net (decision 06-11-2026, entry_speed): the hand-over rule assumes that the drone ahead flies
+          its own lane speeds. In a chain of hand-overs at the transit minimum it can be slower (it is still
+          opening its own gap to GAP_MIN). A drone is then created slower than V_ENTRY, at the highest speed at
+          which it stays SEP_H behind (entry_gap). That speed was lost in the transit airspace, outside the
+          structure, so every such entry is an event slow_entry and is counted; the entry leg (GATE_MARGIN) is
+          chosen so that it does not happen below capacity
   ARC     along the arc at its waiting speed. No overtaking (decision 26-10-2026): a drone
           that closes in on the drone ahead on the same arc takes over its speed. For an
           L+C behind a multicopter this means leaving the wing and flying on the rotors.
@@ -49,7 +57,7 @@ What a drone does (one state per drone):
           The leader speeds up only on its arc, not on its entry leg (decision 05-11-2026): at 15.4 m/s its
           look-ahead for the turn onto the arc would be 104 m, longer than the 100 m entry leg, and its
           turn radius 52 m instead of 34 m, so the turn-in would no longer be the one handover_time
-          assumes. On the entry leg the follower keeps the leader's speed (12.4 m/s for both), so the gap
+          assumes (with the longer entry leg of 06-11-2026 the first reason is gone, the second stays). On the entry leg the follower keeps the leader's speed (12.4 m/s for both), so the gap
           stays as it is until the leader is on its arc
   HOLD    hover at the end of the arc while not cleared (as in Chang et al.). The drone ahead brakes to a
           standstill at the end of its arc (A_DECEL) and then hovers (decision 04-11-2026; before, it
@@ -94,20 +102,23 @@ speed 5 m/s up and down; ceiling 150 m; acceleration and braking A_DECEL (0.93 m
 Before, they were the DJI M200 and the Amazon octocopter of that file, with their limits.
 
 Drones are handed to VPMS by the TRAFFIC plugin (register); other drones are ignored.
-Events for FLIGHTLOG: arc_in, hold, direct_to, merge, touchdown, speedup, speedup_end.
+Events for FLIGHTLOG: arc_in, hold, direct_to, merge, touchdown, speedup, speedup_end; slow_entry (logged by
+TRAFFIC when it creates a drone, decision 06-11-2026).
 Commands: VPMS SHOW (draw the structure), VPMS SHARED / VPMS SPEED (variant, before traffic),
           VPMS TARGET 40 (target separation at the merge point in s, before traffic; the structure stays the
           one designed for T_DESIGN = 40 s, decision 05-11-2026),
           VPMS OFFSET 25 (side offset of each entry point in m, speed variant; 0 = one shared entry
           point, the design of 29-10-2026; before traffic),
-          VPMS TIME / VPMS DISTANCE (spacing a follower keeps in its lane, ARC_SPACING).
+          VPMS TIME / VPMS DISTANCE (spacing a follower keeps in its lane, ARC_SPACING),
+          VPMS MARGIN 200 (length of the entry leg in m, GATE_MARGIN; design checks only, before traffic,
+          decision 06-11-2026).
 """
 import os
 import sys
 import numpy as np
 from bluesky import core, stack, traf, sim
 from bluesky.tools import aero
-from bluesky.tools.aero import vtas2cas
+from bluesky.tools.aero import vtas2cas, vcas2tas
 
 EXPERIMENTEN = os.environ.get("EXPERIMENTEN", os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "experimenten"))
@@ -154,8 +165,14 @@ K_VRS = 1.5                   # decision 05-11-2026: faster than VS_DIRECT_MAX o
 VS_FAST = 5.0                 #    K_VRS x V_IH (MC 8.1, L+C 9.5 m/s): the rotor then gets clean air, so the vortex
                               #    ring state cannot form; up to VS_FAST, the limit of GMC and GLC in BlueSky
 DH_STEP = 0.05                # m: height step of the descent plan
-GATE_MARGIN = 100.0           # m: level stretch gate -> outer arc: the L+C starts its turn onto the
-                              #    arc look_ahead (67 m) before the arc start, after ~2.5 s straight
+GATE_MARGIN = 150.0           # m: level stretch gate -> outer arc (the entry leg); the L+C starts its turn onto
+                              #    the arc look_ahead (67 m) before the arc start, after ~6 s straight.
+                              #    Decision 06-11-2026: 150 m (was 100 m: ~2.5 s straight), from the design check
+                              #    entryprobe (shared and speed variant, 45-90 drones/h, 3-5 seeds): the shortest
+                              #    leg without slow entries up to 60 drones/h; 200 and 250 m remove nothing more.
+                              #    With 100 m, a hand-over chain MC-MC-L+C gave losses of separation (15-19 m) at 60
+                              #    and 75 drones/h: the second MC still slows down to open its gap to GAP_MIN when
+                              #    the first one already slows down for its arc. VPMS MARGIN m sets it (checks only)
 ENTRY_OFFSET = None           # m: speed variant: each entry point lies entry_offset() to the side of the gate's
                               #    radial, MC counter-clockwise, L+C clockwise (decision 03-11-2026). None = computed,
                               #    entry_offset_min() (decision 05-11-2026; was 25 m); VPMS OFFSET m sets a fixed
@@ -246,7 +263,7 @@ def single_entry_time():
     speed variant, an MC and a following L+C fly the same line inwards, at the same height, and the L+C is
     faster. Smallest time (s) between them at the gate so that the L+C stays SEP_H behind until it leaves
     the line:  A. it turns onto its arc (look_ahead before the arc start);  B. it is cleared at once and
-    flies direct along the same line until it is SEP_V lower (clear_distance()). B binds: about 9.4 s (9.7 s with the descent before 05-11-2026)."""
+    flies direct along the same line until it is SEP_V lower (clear_distance()). B binds: about 10.9 s with the entry leg of 150 m (06-11-2026; 9.4 s with 100 m, 9.7 s with the descent before 05-11-2026)."""
     v_mc, v_lc = V_ENTRY[0], V_ENTRY[1]
     s_a = max(GATE_MARGIN - look_ahead(v_lc) - v_lc * DT, 0.0)           # m from the gate
     s_b = gate_distance() - clear_distance()
@@ -349,7 +366,9 @@ def handover_time(lead_lc, foll_lc):
     turns onto its arc, so an L+C behind it (12.4 m/s, shared variant) must lose 6.7 m/s, not 3.4 m/s as in
     the formula of 03-11-2026 (4.9 s, which gave 30.8 m in restoreprobe ML). Smallest h with
     handover_gap >= SEP_H, to 0.01 s. Plus DT: a drone is created at the first update after its drawn time.
-    Shared variant: MC-MC 4.2 s, L+C-L+C 3.1 s, L+C behind MC 6.1 s, MC behind L+C 3.1 s."""
+    Shared variant: MC-MC 4.2 s, L+C-L+C 3.1 s, L+C behind MC 5.1 s, MC behind L+C 3.1 s (entry leg of 150 m,
+    decision 06-11-2026; with 100 m L+C behind MC 6.1 s: the L+C now first slows to 9.0 m/s behind the MC and
+    only later, with it, to 5.7 m/s)."""
     key = (bool(lead_lc), bool(foll_lc), VARIANT, T_DESIGN, ENTRY_OFFSET, GATE_MARGIN, A_DECEL, A_ACC, DT, SEP_H, K_SPACING)
     if key not in _HANDOVER:
         lo, hi = 0.0, 30.0
@@ -361,6 +380,37 @@ def handover_time(lead_lc, foll_lc):
                 lo = mid
         _HANDOVER[key] = round(hi, 2) + DT
     return _HANDOVER[key]
+
+
+def entry_gap(v0, s_lead, v_lead, v_cap, lead_on_arc, lead_lc, foll_lc, horizon=60.0, dt_m=0.02):
+    """Smallest distance (m) along the lane between a drone created now at its entry point at v0 m/s and the
+    drone ahead in its lane (decision 06-11-2026, for entry_speed). The model of handover_gap, but from the real
+    state of the drone ahead: s_lead m ahead at v_lead m/s, flying no faster than it is commanded now (v_cap)
+    and than its own lane speeds (V_ENTRY until its turn onto the arc, then V_ARC, braking to a standstill at
+    the end of its arc), at A_DECEL / A_ACC. The new drone keeps v0 for one update (DT), then flies no faster
+    than its own lane speeds and than the drone ahead flew DT earlier."""
+    leg = gate_distance() - arc_start_along(foll_lc)              # entry leg (m): one lane, one arc
+    end = leg + arc_radius(foll_lc) * np.radians(ARC_DEG)         # end of the arc, along the lane
+    turn = [gate_distance() - arc_start_along(lc) - look_ahead(V_ENTRY[lc]) - V_ENTRY[lc] * DT for lc in (0, 1)]
+    lead, foll = int(lead_lc), int(foll_lc)
+    n, kd = int(horizon / dt_m) + 1, int(round(DT / dt_m))
+    dec, acc = A_DECEL * dt_m, A_ACC * dt_m
+    v, s = v_lead, s_lead
+    v_l, s_l = [0.0] * n, [0.0] * n
+    for k in range(n):                                            # the drone ahead
+        v_l[k], s_l[k] = v, s
+        want = V_ARC[lead] if (lead_on_arc or s >= turn[lead]) else V_ENTRY[lead]
+        want = min(want, v_cap, np.sqrt(2 * A_DECEL * max(end - s, 0.0)))
+        v += max(-dec, min(acc, want - v))
+        s += v * dt_m
+    v, s, g_min = v0, 0.0, np.inf
+    for k in range(n):                                            # the new drone, from its entry point
+        g_min = min(g_min, s_l[k] - s)
+        if k >= kd:
+            want = min(V_ENTRY[foll] if s < turn[foll] else V_ARC[foll], v_l[k - kd])
+            v += max(-dec, min(acc, want - v))
+        s += v * dt_m
+    return g_min
 
 
 def to_xy(lat, lon):
@@ -609,6 +659,8 @@ class Vpms(core.Entity):
         self.nogo_since = {}         # acid -> first time its clearance waited for a no-go zone
         self.nogo_delays = []        # (acid, s) clearance delayed by a no-go zone (decision 05-11-2026)
         self.nogo_hold = []          # drones in a hold without a conflict-free descent (expected none)
+        self.slow_entries = []       # (time, acid, m/s, note) drones created slower than V_ENTRY (safety net,
+                                     #    decision 06-11-2026; expected none below capacity)
 
     def reset(self):
         super().reset()
@@ -623,6 +675,55 @@ class Vpms(core.Entity):
         last = self.last_entry.get(arc_key(g, is_lc), -np.inf)
         t_prev, lc_prev = self.last_gate.get(entry_key(g, is_lc), (-np.inf, False))
         return max(t_now, last + T_TARGET - entry_leg_time(is_lc), t_prev + handover_time(lc_prev, is_lc))
+
+    def entry_speed(self, g, is_lc):
+        """Speed (m/s) at which TRAFFIC creates a drone at the entry point of gate g now, and a note (empty when
+        it is V_ENTRY). Decision 06-11-2026, the safety net: normally V_ENTRY. Lower only when the drone ahead in
+        its lane is slower or closer than the hand-over rule assumes (a chain of hand-overs at the transit
+        minimum, before the lane rules have opened the gaps to GAP_MIN); then the highest speed (to 0.05 m/s)
+        at which the new drone stays SEP_H behind it (entry_gap). That speed was lost in the transit airspace,
+        so TRAFFIC logs it as an event slow_entry and it is counted. The drone ahead is the nearest drone of the
+        lane (entry leg, arc or hold), at its distance along the lane, or at its straight-line distance from the
+        entry point when that is shorter (while it cuts the corner onto its arc)."""
+        lc = int(is_lc)
+        v_full = V_ENTRY[lc]
+        key = arc_key(g, is_lc)
+        lane = [j for j in np.where(self.state > 0)[0]
+                if self.state[j] in (ENTRY, ARC, HOLD) and arc_key(self.gate[j], self.is_lc[j]) == key]
+        if not lane:
+            return v_full, ""
+        x, y = to_xy(traf.lat[lane], traf.lon[lane])
+        ex, ey = offset_xy(g, is_lc, gate_distance())                 # the entry point
+        tx, ty = arc_start(g, is_lc)
+        leg = gate_distance() - arc_start_along(is_lc)
+        best = None
+        for k, j in enumerate(lane):
+            if self.state[j] == ENTRY:
+                along = leg - np.hypot(tx - x[k], ty - y[k])
+            else:
+                p = ((np.degrees(np.arctan2(x[k], y[k])) - arc_start_bearing(g, is_lc)) * ARC_DIR) % 360
+                along = leg + arc_radius(is_lc) * np.radians(0.0 if p > 300 else p)
+            s = float(min(along, np.hypot(x[k] - ex, y[k] - ey)))
+            if best is None or s < best[0]:
+                best = (s, j)
+        s_lead, j = best
+        if s_lead - SEP_H >= v_full * DT + v_full ** 2 / (2 * A_DECEL):
+            return v_full, ""                          # far enough to stop behind it, whatever it does
+        hold = self.state[j] == HOLD
+        v_lead = 0.0 if hold else float(traf.tas[j])
+        v_cap = 0.0 if hold else float(vcas2tas(traf.selspd[j], traf.alt[j]))
+        args = (s_lead, v_lead, v_cap, self.state[j] != ENTRY, bool(self.is_lc[j]), bool(is_lc))
+        if entry_gap(v_full, *args) >= SEP_H:
+            return v_full, ""
+        lo, hi = 0.0, v_full
+        while hi - lo > 0.05:
+            mid = 0.5 * (lo + hi)
+            if entry_gap(mid, *args) >= SEP_H:
+                lo = mid
+            else:
+                hi = mid
+        return lo, (f"{lo:.1f} m/s instead of {v_full:.1f}: {traf.id[j]} ({STATE_NAMES[self.state[j]]}) "
+                    f"{s_lead:.0f} m ahead at {v_lead:.1f} m/s, commanded {v_cap:.1f} m/s")
 
     def register(self, acid, g, is_lc, t_now, t_pad=T_PAD, eta_err=0.0):
         """Called by TRAFFIC just before it creates the drone at gate g."""
@@ -1000,11 +1101,16 @@ class Vpms(core.Entity):
     # ------------------------------------------------------------------ command
     @stack.command(name="VPMS")
     def command(self, what: str = "SHOW", value: float = 0.0):
-        """VPMS [SHOW | SHARED | SPEED | TARGET s | OFFSET m | TIME | DISTANCE]: draw the structure, choose the
-        arc variant, set the target separation (s) or the side offset of each entry point (m, speed variant).
-        Variant, target and offset before the traffic starts."""
-        global VARIANT, T_TARGET, ENTRY_OFFSET, ARC_SPACING
+        """VPMS [SHOW | SHARED | SPEED | TARGET s | OFFSET m | MARGIN m | TIME | DISTANCE]: draw the structure,
+        choose the arc variant, set the target separation (s), the side offset of each entry point (m, speed
+        variant) or the length of the entry leg (m, design checks only). Variant, target, offset and margin before
+        the traffic starts."""
+        global VARIANT, T_TARGET, ENTRY_OFFSET, ARC_SPACING, GATE_MARGIN
         what = what.upper()
+        if what == "MARGIN" and value > 0:            # decision 06-11-2026: for the design check entryprobe
+            GATE_MARGIN = float(value)
+            return True, (f"VPMS entry leg {GATE_MARGIN:g} m: gates at {gate_distance():.0f} m; hand-over MC-MC "
+                          f"{handover_time(False, False):.1f} s, L+C behind MC {handover_time(False, True):.1f} s")
         if what in ("TIME", "DISTANCE"):
             ARC_SPACING = what.lower()
             return True, f"VPMS spacing in a lane: {ARC_SPACING}"

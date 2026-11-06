@@ -116,6 +116,10 @@ print(f"Touchdown intervals:    min {touch.min():.1f} s  (never below {t_min:.1f
       f"one drone at a time in the final descent when the target is at least 33.5 s)")
 print(f"Arcs: overshoot to the inside {max(-overshoot, 0.0):.1f} m; largest deviation after the first 20 deg {max_radial:.1f} m")
 print(f"Losses of separation (32 m and 7.62 m): {len(los_pairs)} pairs {sorted(los_pairs)[:6]}")
+print(f"Slow entries (created slower than the entry speed, safety net of 06-11-2026): {len(vp.slow_entries)} "
+      f"(expected 0 below capacity; entry leg {V.GATE_MARGIN:g} m)")
+for t_se, acid_se, v_se, note_se in vp.slow_entries[:6]:
+    print(f"   t={t_se:.0f} {acid_se}: {note_se}")
 print(f"L+C below stall on an arc (behind a slower or holding drone): {len(trans_on_arc)} {sorted(trans_on_arc)[:6]}")
 print(f"L+C below stall while braking to the end of its own arc (no drone ahead): {len(braking_to_end)}")
 print(f"Direct leg: fastest descent {vs_fast:.2f} m/s (at most {V.VS_FAST:.0f}); faster than {V.VS_DIRECT_MAX:.0f} m/s "

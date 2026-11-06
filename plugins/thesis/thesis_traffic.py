@@ -24,11 +24,15 @@ drawn time; there is no waiting before the gate, because what happens in the tra
 outside the model. The only rule at the hand-over (decision 03-11-2026): the transit minimum. When
 a drone passes its entry point, the previous drone at that point is at least SEP_H (32 m) ahead,
 more if the follower would close in while both follow their lane speeds (VPMS handover_time, decision
-04-11-2026: MC behind MC 4.2 s, L+C behind L+C 3.1 s, L+C behind MC 6.1 s, MC behind L+C 3.1 s, each
-including one update step; before 4.0, 3.1, 4.9 and 3.1 s). A drone drawn closer
+04-11-2026: MC behind MC 4.2 s, L+C behind L+C 3.1 s, L+C behind MC 5.1 s, MC behind L+C 3.1 s, each
+including one update step; L+C behind MC 6.1 s with the entry leg of 100 m before 06-11-2026; before 04-11-2026
+4.0, 3.1, 4.9 and 3.1 s). A drone drawn closer
 is moved later by the generator (draw). In the speed variant an MC and an L+C use different entry
 points (about 55 m apart), so there is no rule between them. Bunches of arrivals are absorbed inside the
 structure: the lane rules restore GAP_MIN (48 m), drones fly slower on the arc and hover at its end.
+Safety net (decision 06-11-2026): a drone is created at VPMS entry_speed, which is its entry speed except when
+the drone ahead in its lane is slower than the hand-over rule assumes; it is then created slower, so that it
+stays SEP_H behind, and the event slow_entry is logged and counted (expected none below capacity).
 
 Needs VPMS (and ENERGY for the state of charge). Command:
   TRAFFIC demand seed [eta_err_pct] [pad] [warmup] [measure]
@@ -147,8 +151,9 @@ class Traffic(core.Entity):
         acid = f"{'LC' if lc else 'MC'}{k + 1:04d}"
         geo = sys.modules[type(vpms).__module__]              # the VPMS module: geometry
         lat, lon, alt, hdg = geo.gate(g, lc)                  # entry point of this gate and type
+        v0, slow = vpms.entry_speed(g, lc)                    # V_ENTRY; lower only as the safety net (06-11-2026)
         vpms.register(acid, g, lc, sim.simt, float(p["t_pad"][k]), float(p["eta_err"][k]))
-        traf.cre(acid, TYPE[lc], lat, lon, hdg, alt, vtas2cas(geo.V_ENTRY[int(lc)], alt))
+        traf.cre(acid, TYPE[lc], lat, lon, hdg, alt, vtas2cas(v0, alt))
         wait = sim.simt - (self.t0 + p["time"][k])
         soc = p["soc"][k] - P_WAIT[lc] * wait / 3600 / E_BAT[lc]
         energy = plugin("energy", "Energy")
@@ -161,6 +166,10 @@ class Traffic(core.Entity):
         if fl is not None and fl.files and i >= 0:
             fl.event(i, "measured" if acid in self.measured else "runin",
                      f"arrival {p['time'][k]:.1f} s, waited {wait:.1f} s at gate")
+        if slow:                                              # safety net used: counted (decision 06-11-2026)
+            vpms.slow_entries.append((sim.simt, acid, v0, slow))
+            if fl is not None and fl.files and i >= 0:
+                fl.event(i, "slow_entry", slow)
 
     def check_end(self):
         if self.done or self.next < len(self.plan["time"]) or self.waiting:
@@ -192,7 +201,7 @@ class Traffic(core.Entity):
         if fl is not None and geo is not None:          # settings of this run for the analysis (06-11-2026)
             fl.run_info(variant=geo.VARIANT, target=geo.T_TARGET, design=geo.T_DESIGN, k_spacing=geo.K_SPACING,
                         r_mc=float(geo.arc_radius(False)), r_lc=float(geo.arc_radius(True)),
-                        gate_distance=float(geo.gate_distance()),
+                        gate_distance=float(geo.gate_distance()), gate_margin=float(geo.GATE_MARGIN),
                         offset=float(geo.entry_offset()) if geo.VARIANT == "speed" else 0.0,
                         demand=demand, seed=int(seed), eta_pct=float(eta), pad=pad.upper(),
                         warmup=float(warmup), measure=float(measure), arrivals=n, arrivals_lc=n_lc,
