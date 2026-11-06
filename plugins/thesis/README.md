@@ -7,7 +7,7 @@ in deze map (`bluesky/plugins/thesis/`); je hoeft niets in te stellen.
 |---|---|---|
 | ENERGY | `energy.py` | Houdt per drone de accu bij: elke seconde energie = vermogen × tijd, ook per vliegmodus. |
 | FLIGHTLOG | `flightlog.py` | Schrijft drie CSV-bestanden per run: per drone, per gebeurtenis en (optioneel) per seconde. |
-| VPMS | `vpms.py` | De structuur van Chang et al. (2026), geschaald: gates, bogen, merge point, laatste daling, platform. Met FCFS (case C1). |
+| VPMS | `vpms.py` | De structuur van Chang et al. (2026), geschaald: gates, bogen, merge point, laatste daling, platform. Met FCFS (cases C1 en C2). |
 | TRAFFIC | `thesis_traffic.py` | Het verkeer en de verstoringen van één run. |
 
 (ARRIVALS is op 27-10 vervangen door TRAFFIC en verwijderd.)
@@ -69,14 +69,31 @@ wijziging alle vier opnieuw.
     modus, info = oude), `los_start`/`los_end` (info = de andere drone; bij `los_end` ook de ernst en d_h en d_v
     op het diepste punt), de events van VPMS
     en TRAFFIC (hieronder), `end`. Met de toestand op dat moment.
+  - `run.json` (besluit 06-11): de instellingen van de run (variant, target, structuur, vraag, seed, fout, padmodus,
+    inloop en meetduur), geschreven door TRAFFIC bij de start. De analyse leest hieruit de variant.
 - `FLIGHTLOG naam TRACE` schrijft daarnaast `trace.csv`: elke drone elke seconde
   (positie, snelheid, modus, vermogen, energie, SoC). Groot; alleen voor figuren en debuggen.
 - Verlies van separatie: dichter dan 32 m horizontaal én 7,62 m verticaal (Metropolis II, besluit 23-10).
-- LoS-ernst (besluit 05-11, de intrusion severity bij Scholtes; definitie daar nog te controleren): hoe diep de
+- LoS-ernst (besluit 05-11; gelijk aan de intrusion severity van Scholtes 2018, eq. 6, naar Maas et al. 2016): hoe diep de
   beschermde cilinder wordt binnengedrongen, min(1 − d_h/32, 1 − d_v/7,62); 0 aan de rand, 1 op dezelfde plek. De
   kleinste van de twee, omdat de drone eruit is zodra één van beide zijn minimum haalt. Per voorval de hoogste waarde.
 - Figuren en samenvatting: `python analysis/run_report.py ../bluesky/output/naam`
-  (vanuit de map `experimenten`).
+  (vanuit de map `experimenten`). Sinds 06-11 ook de vertraging van de gemeten drones (`analysis/delays.py`):
+  tijd van ingangspunt tot touchdown min de vrije vliegtijd van dezelfde drone zonder ander verkeer (Dear 1976;
+  Scholtes 2018, eq. 8: direct-to zodra hij zijn boog binnenkomt), opgesplitst in aanvliegstuk, boog (vliegend),
+  hover aan het boogeinde en kolom boven de pad; plus de vertraging op het merge point, de toets aan 30 s (Chang et al.
+  2026) en Chang's eigen formule als bijzaak. Schrijft `summary.csv` (één regel per run) en `delays.csv` (per drone).
+  De vrije vliegtijden komen uit `python analysis/free_times.py` (`analysis/free_times.csv`); opnieuw draaien na
+  elke wijziging van de structuur (run_report weigert anders).
+  Ook (besluit 06-11): de energie van de vertraging (energie tot touchdown min die van de vrije vlucht, dezelfde delen,
+  en Wh per minuut vertraging per type); en over het meetuur: doorzet (landingen per uur), benutting van het merge
+  point (landingen × target / meettijd; 1 − benutting is verloren capaciteit), gemiddeld en kleinste interval tussen
+  landingen (Scholtes 2018), de wachtrij van gate tot go (gemiddeld, grootste, begin en eind, deel van de tijd met ≥ 2,
+  en de controle met de wet van Little), het drukste kwartier en de peak hour factor van de aankomsten (vaste
+  kwartieren en schuivend venster), en breakdown (vraag ≥ 3600 / target; landingen onder 20 %; helling van de
+  vertraging). `run.json` bevat daarvoor ook `t0`, de simulatietijd van de start van TRAFFIC.
+- Events: SoC en energie komen sinds 06-11 rechtstreeks uit ENERGY (de energie per fase is dan hooguit één
+  ENERGY-stap van 1 s oud), behalve tijdens het verwijderen van drones; dan de kopie van FLIGHTLOG, zoals eerst.
 
 ### VPMS
 - Afstanden (besluit 05-11): de minima uit de literatuur (32 m / 7,62 m, Metropolis II) zijn de LoS-definitie en de
@@ -144,13 +161,16 @@ wijziging alle vier opnieuw.
   point is pas vrij als de drone eronder 11,43 m lager is; anders wacht de volgende op 48 m (1,5 × 32 m). Plaatsen
   waar een drone blijft hangen (besluit 05-11; was 7,62 m en 35 m). Kleinste tijd tussen twee landingen 19,2 s
   (was 17,3 s).
-- FCFS: vrijgegeven in volgorde van binnenkomst op de boog, ten minste 40 s na de vorige bij het merge
-  point (gepland). Precies 40 s: de marge van 0,5 s die er eerst bovenop zat (voor de oude formule) is weg
+- FCFS (besluit 06-11): vrijgegeven in volgorde van binnenkomst bij de **gate** (de startstreep; Chang et al. 2026: de
+  aanvraag bij de gate), ten minste 40 s na de vorige bij het merge point (gepland). Zit de eerste nog op zijn
+  aanvliegstuk, dan krijgt niemand een go; hij krijgt de zijne waar hij zijn bocht naar de boog inzet (het aanvliegstuk
+  wijst al naar het merge point). Was: volgorde van binnenkomst op de boog, wat dezelfde drones in de twee varianten
+  een andere volgorde gaf (MC-aanvliegstuk 7 s tegen 30 s). `test_vpms` telt vrijgaven buiten gate-volgorde (verwacht 0). Precies 40 s: de marge van 0,5 s die er eerst bovenop zat (voor de oude formule) is weg
   (besluit 05-11), want de voorspelling is nu exact. Een latere SEQUENCER-plugin vervangt alleen `next_clearance()`.
 - Verstoring: de sequencer plant met een voorspelde vliegtijd naar het merge point met een fout per drone
   (van TRAFFIC); de drone vliegt de echte tijd. Daardoor wijken de echte intervallen af van de geplande.
-- Op het direct-been houdt een drone zijn boog-hoogte tot 37 m binnen de boog, zodat hij over de
-  lagere buurboog gaat met de volle 10 m ertussen.
+- Op het direct-been houdt een drone van een bovenste boog zijn hoogte tot 32 m binnen de lagere buurboog, met 11,43 m
+  ertussen (daalplan, besluit 05-11; was 37 m en 10 m).
 - Wind wordt in dit onderzoek niet gesimuleerd (besluit 27-10). VPMS kan het wel (hoveren = neus in de
   wind, positie vastgehouden), voor later onderzoek.
 - Zet BlueSky's CAS/Mach-grens op 0,01 m/s (anders leest BlueSky 0,1-2 m/s als Mach).

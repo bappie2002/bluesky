@@ -1,6 +1,8 @@
 """ VPMS + TRAFFIC (+ ENERGY, FLIGHTLOG): a short run through the structure, without GUI.
 Run from the bluesky folder:  python plugins/thesis/tests/test_vpms.py [shared|speed] [eta_err_pct] [demand] [target_s]
-(target_s: VPMS TARGET, default 40; the structure must stay the one for 40 s, decision 05-11-2026)
+                                                                        [warmup_s] [measure_s]
+(target_s: VPMS TARGET, default 40; the structure must stay the one for 40 s, decision 05-11-2026;
+warmup_s and measure_s: default 300 and 600 s, a short test; 3600 3600 is a full run as in the experiments)
 Checks: every drone lands; merge and touchdown intervals; losses of separation (32 m / 7.62 m);
 L+C drones that had to leave their wing behind a multicopter; the descent on the direct leg (fastest rate,
 no faster than 2 m/s at low speed, exactly 40 m at the merge point) and the no-go zone (decision 05-11-2026). """
@@ -14,10 +16,12 @@ variant = sys.argv[1] if len(sys.argv) > 1 else "shared"
 eta = sys.argv[2] if len(sys.argv) > 2 else "0"
 demand = sys.argv[3] if len(sys.argv) > 3 else "60"
 target = sys.argv[4] if len(sys.argv) > 4 else "40"
+warmup = sys.argv[5] if len(sys.argv) > 5 else "300"
+measure = sys.argv[6] if len(sys.argv) > 6 else "600"
 bs.init(mode="sim", detached=True)
 for cmd in ["DT 0.5", "PLUGINS LOAD ENERGY", "PLUGINS LOAD FLIGHTLOG", "PLUGINS LOAD VPMS",
             "PLUGINS LOAD TRAFFIC", f"VPMS {variant}", f"VPMS TARGET {target}", f"FLIGHTLOG vpms_{variant}",
-            f"TRAFFIC {demand} 1 {eta} BASE 300 600"]:
+            f"TRAFFIC {demand} 1 {eta} BASE {warmup} {measure}"]:
     bs.stack.stack(cmd)
 bs.sim.step()
 def plugin_module(name, cls):
@@ -40,10 +44,14 @@ print(f"Entry offset {V.entry_offset():.1f} m per side (speed variant; computed 
       f"{V.handover_time(False, False):.1f} s, L+C-L+C {V.handover_time(True, True):.1f} s"
       + (f", L+C behind MC {V.handover_time(False, True):.1f} s" if V.VARIANT == "shared" else
          " (MC and L+C have their own entry points)"))
-while bs.sim.simt < 4000 and not sc.done:
+cleared_at = {}                        # acid -> time of its go (FCFS order check, decision 06-11-2026)
+while bs.sim.simt < float(warmup) + float(measure) + 3000 and not sc.done:
     bs.sim.step()
     n = bs.traf.ntraf
     spawned.update(bs.traf.id)
+    for i, acid in enumerate(bs.traf.id):
+        if vp.state[i] == V.DIRECT and acid not in cleared_at:
+            cleared_at[acid] = bs.sim.simt
     for i, acid in enumerate(bs.traf.id):                                  # descent checks (05-11-2026)
         if vp.state[i] == V.DIRECT:
             if acid in prev_alt:
@@ -103,13 +111,18 @@ merge = np.diff([t for t, _ in vp.merges]); touch = np.diff([t for t, _ in vp.to
 print(f"\nSimulated {bs.sim.simt:.0f} s; {len(spawned)} drones created, "
       f"{len(vp.touchdowns)} landed, {bs.traf.ntraf} still flying (expected 0)")
 print(f"Merge-point intervals:  min {merge.min():.1f} s, mean {merge.mean():.1f} s  (target {V.T_TARGET:.0f} s)")
-print(f"Touchdown intervals:    min {touch.min():.1f} s  (one at a time: >= 33.5 s at 40 s target)")
+t_min = V.T_PAD + (V.K_SPACING * V.SEP_V - V.H_SLOW) / V.V_DESC[0] + V.H_SLOW / V.V_DESC[1]   # column rule
+print(f"Touchdown intervals:    min {touch.min():.1f} s  (never below {t_min:.1f} s, the column rule; "
+      f"one drone at a time in the final descent when the target is at least 33.5 s)")
 print(f"Arcs: overshoot to the inside {max(-overshoot, 0.0):.1f} m; largest deviation after the first 20 deg {max_radial:.1f} m")
 print(f"Losses of separation (32 m and 7.62 m): {len(los_pairs)} pairs {sorted(los_pairs)[:6]}")
 print(f"L+C below stall on an arc (behind a slower or holding drone): {len(trans_on_arc)} {sorted(trans_on_arc)[:6]}")
 print(f"L+C below stall while braking to the end of its own arc (no drone ahead): {len(braking_to_end)}")
 print(f"Direct leg: fastest descent {vs_fast:.2f} m/s (at most {V.VS_FAST:.0f}); faster than {V.VS_DIRECT_MAX:.0f} m/s "
       f"below {V.K_VRS} v_ih: {vrs_steps} steps (expected 0); height at the merge point off 40 m by at most {merge_dev:.2f} m")
+order = [V.call_number(a) for a in sorted(cleared_at, key=cleared_at.get)]   # call number = drawn arrival order
+out_of_order = sum(1 for a, b in zip(order, order[1:]) if b < a)
+print(f"FCFS: {len(order)} clearances, {out_of_order} out of gate order (expected 0: the start line is the gate)")
 nd = [d for _, d in vp.nogo_delays]
 print(f"No-go zone: {len(nd)} clearances delayed" + (f", longest {max(nd):.1f} s, mean {np.mean(nd):.1f} s" if nd else "")
       + f"; holds without a conflict-free descent: {len(vp.nogo_hold)} (expected 0)")

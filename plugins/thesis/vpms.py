@@ -75,10 +75,11 @@ What a drone does (one state per drone):
           was 17.3 s).
   PAD     on the pad for its pad time (6 s from TRAFFIC, decision 05-11-2026), then deleted
 
-Sequencing in this file is first-come-first-served (case C1): drones are cleared in the
-order in which they entered their arc, each at least T_TARGET after the previous one at
-the merge point (planned; exactly T_TARGET, without the buffer of one update used before
-05-11-2026). A later SEQUENCER plugin only has to replace next_clearance().
+Sequencing in this file is first-come-first-served (cases C1 and C2): drones are cleared in the
+order in which they passed their entry point (the start line is the gate, decision 06-11-2026, as the
+request at the gate of Chang et al. 2026; before, the order in which they entered their arc), each at
+least T_TARGET after the previous one at the merge point (planned; exactly T_TARGET, without the buffer
+of one update used before 05-11-2026). A later SEQUENCER plugin only has to replace next_clearance().
 
 Disturbance (decision 27-10-2026: no wind in this study): every drone has its own error in
 the predicted flight time to the merge point (eta_err, drawn by TRAFFIC). The sequencer plans
@@ -550,6 +551,12 @@ def plan_descent(g, is_lc, x, y, v, hdg, h0, gs, avoid=True):
     return descent_heights(grid, forbid, pv, is_lc)
 
 
+def call_number(acid):
+    """The number in a call sign of TRAFFIC (MC0012 -> 12): its place in the drawn arrival order."""
+    digits = "".join(c for c in acid if c.isdigit())
+    return int(digits) if digits else 0
+
+
 def follow_speed(gap, v_lead, v_own):
     """Speed of a follower at this gap (m) behind a leader at v_lead (m/s): no overtaking. It closes
     or opens the gap to the wanted spacing in about T_CLOSE s, and can always stop GAP_MIN behind."""
@@ -581,6 +588,7 @@ class Vpms(core.Entity):
             self.is_lc = np.array([], dtype=bool)
             self.gate = np.array([], dtype=int)
             self.t_arc_in = np.array([])             # time the drone entered its arc
+            self.t_gate = np.array([])               # time the drone passed its entry point (FCFS order, 06-11-2026)
             self.t_merge = np.array([])              # planned time at the merge point
             self.t_touch = np.array([])              # touchdown time
             self.t_pad = np.array([])                # time on the pad (s)
@@ -633,6 +641,7 @@ class Vpms(core.Entity):
             self.is_lc[k] = traf.type[k].upper() in LC_TYPES
             self.gate[k], self.t_pad[k], self.eta_err[k] = info
             self.t_arc_in[k] = self.t_merge[k] = self.t_touch[k] = np.inf
+            self.t_gate[k] = sim.simt
             self.speedup[k] = False
 
     def event(self, i, name, info=""):
@@ -975,9 +984,18 @@ class Vpms(core.Entity):
             stack.stack(f"DEL {acid}")
 
     def next_clearance(self, idx):
-        """First-come-first-served: the drone that entered its arc first and is not cleared."""
-        waiting = [i for i in idx if self.state[i] in (ARC, HOLD)]
-        return min(waiting, key=lambda i: self.t_arc_in[i]) if waiting else None
+        """First-come-first-served with the start line at the gate (decision 06-11-2026; Chang et al. 2026: the
+        request is made at the gate): of the drones without a go, the one that passed its entry point first gets
+        the next slot. While it is still on its entry leg, nobody is cleared; it gets its go where it starts its
+        turn onto its arc, as before (the entry leg already points at the merge point, so an earlier go would
+        not shorten its path). Before: the drone that entered its arc first, which gave the same drones a
+        different order in the two variants (the MC entry leg takes 7 s on shared arcs, 30 s on speed-separated
+        arcs). Ties (two drones in one update): the earlier drawn arrival, the number in the call sign."""
+        waiting = [i for i in idx if self.state[i] in (ENTRY, ARC, HOLD)]
+        if not waiting:
+            return None
+        first = min(waiting, key=lambda i: (self.t_gate[i], call_number(traf.id[i])))
+        return first if self.state[first] in (ARC, HOLD) else None
 
     # ------------------------------------------------------------------ command
     @stack.command(name="VPMS")

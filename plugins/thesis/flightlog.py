@@ -7,18 +7,23 @@
 
 Separation (decision 05-11-2026): min_sep is the smallest horizontal distance to a drone that is
 less than SEP_V apart vertically (before: to any drone, also one far above it). A loss of separation
-(LoS) is dh < SEP_H and dv < SEP_V. Its severity is how deep the protected cylinder is entered,
+(LoS) is dh < SEP_H and dv < SEP_V. Its severity (the intrusion severity of Scholtes 2018, eq. 6, after
+Maas et al. 2016) is how deep the protected cylinder is entered,
 min(1 - dh / SEP_H, 1 - dv / SEP_V): 0 at its edge, 1 at the same position; the smaller of the two,
 because the drone is out of the cylinder as soon as one of them reaches its minimum. Per episode the
 highest value (event los_end: the other drone, severity, dh and dv at that moment); per drone the
 number of episodes (n_los) and the highest severity (los_sev).
   trace.csv    one line per drone per second. Only with "FLIGHTLOG name TRACE":
                large, meant for figures and debugging, not for the experiments.
+  run.json     the settings of the run (variant, target, structure, demand, seed, ...), written by
+               TRAFFIC when it starts (run_info, decision 06-11-2026), so that the analysis knows
+               which run it reads (delay needs the variant: experimenten/analysis/delays.py).
 
 Needs the ENERGY plugin (load ENERGY first).
 Other plugins can add their own events with  FlightLog.implinstance().event(i, "name", "info"),
 e.g. the VPMS plugin for "arc_in", "direct_to" and "touchdown".
 """
+import json
 import os
 import sys
 import numpy as np
@@ -63,6 +68,7 @@ class FlightLog(core.Entity):
     def __init__(self):
         super().__init__()
         self.files = {}      # "flights", "events" (and "trace") -> open file
+        self.folder = None   # folder of the current run
         self.ep_other = {}   # acid -> the other drone at the deepest point of its current LoS episode
         with self.settrafarrays():
             self.t_spawn = np.array([])
@@ -146,10 +152,17 @@ class FlightLog(core.Entity):
                                      self.used_wh[i], self.soc[i]])
 
     def event(self, i, name, info=""):
-        """Write one event of drone i (index) with its state at that moment."""
+        """Write one event of drone i (index) with its state at that moment. SoC and energy come straight from
+        ENERGY when it is loaded (decision 06-11-2026): the energy per phase between two events is then at most one
+        ENERGY step (1 s) old; before, from the copy that FLIGHTLOG makes once per second, which could be older."""
+        energy = energy_plugin()
+        # live only while ENERGY's arrays line up with ours: while BlueSky deletes drones, ENERGY may already have
+        # removed them (its index i is then another drone), and the copy is used, as before
+        live = energy is not None and len(energy.used_wh) == len(self.used_wh)
+        soc = energy.soc[i] if live else self.soc[i]
+        used = energy.used_wh[i] if live else self.used_wh[i]
         self.write("events", [sim.simt, traf.id[i], name, info,
-                              MODES[int(self.mode[i])], traf.tas[i], traf.alt[i],
-                              self.soc[i], self.used_wh[i]])
+                              MODES[int(self.mode[i])], traf.tas[i], traf.alt[i], soc, used])
 
     def end_episode(self, i):
         """End of a LoS episode of drone i: event los_end with its severity; keep the highest per drone."""
@@ -192,11 +205,21 @@ class FlightLog(core.Entity):
         name = name or sim.utc.strftime("%Y%m%d_%H%M%S")
         folder = os.path.join(FOLDER, name)
         os.makedirs(folder, exist_ok=True)
+        self.folder = folder
+        if os.path.exists(os.path.join(folder, "run.json")):
+            os.remove(os.path.join(folder, "run.json"))      # not the settings of an earlier run in this folder
         kinds = ["flights", "events"] + (["trace"] if trace.upper() == "TRACE" else [])
         for kind in kinds:
             self.files[kind] = open(os.path.join(folder, kind + ".csv"), "w", buffering=1)   # line by line
             self.files[kind].write(",".join(COLUMNS[kind]) + "\n")
         return True, f"Flight log: {folder} ({', '.join(kinds)})"
+
+    def run_info(self, **info):
+        """Write the settings of this run to run.json in the run folder (decision 06-11-2026). Called by TRAFFIC
+        when it starts; nothing happens when no flight log is open."""
+        if self.files and self.folder:
+            with open(os.path.join(self.folder, "run.json"), "w") as f:
+                json.dump(info, f, indent=1)
 
     def close(self):
         """Close all files (also on RESET), so everything is on disk."""

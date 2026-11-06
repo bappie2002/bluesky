@@ -27,7 +27,7 @@ more if the follower would close in while both follow their lane speeds (VPMS ha
 04-11-2026: MC behind MC 4.2 s, L+C behind L+C 3.1 s, L+C behind MC 6.1 s, MC behind L+C 3.1 s, each
 including one update step; before 4.0, 3.1, 4.9 and 3.1 s). A drone drawn closer
 is moved later by the generator (draw). In the speed variant an MC and an L+C use different entry
-points (50 m apart), so there is no rule between them. Bunches of arrivals are absorbed inside the
+points (about 55 m apart), so there is no rule between them. Bunches of arrivals are absorbed inside the
 structure: the lane rules restore GAP_MIN (48 m), drones fly slower on the arc and hover at its end.
 
 Needs VPMS (and ENERGY for the state of charge). Command:
@@ -188,6 +188,15 @@ class Traffic(core.Entity):
         rule = (f"hand-over MC-MC {geo.handover_time(False, False):.1f} s, L+C-L+C {geo.handover_time(True, True):.1f} s"
                 + (f", L+C behind MC {geo.handover_time(False, True):.1f} s" if geo.VARIANT == "shared" else "")
                 if geo else "no hand-over rule")
+        fl = plugin("flightlog", "FlightLog")
+        if fl is not None and geo is not None:          # settings of this run for the analysis (06-11-2026)
+            fl.run_info(variant=geo.VARIANT, target=geo.T_TARGET, design=geo.T_DESIGN, k_spacing=geo.K_SPACING,
+                        r_mc=float(geo.arc_radius(False)), r_lc=float(geo.arc_radius(True)),
+                        gate_distance=float(geo.gate_distance()),
+                        offset=float(geo.entry_offset()) if geo.VARIANT == "speed" else 0.0,
+                        demand=demand, seed=int(seed), eta_pct=float(eta), pad=pad.upper(),
+                        warmup=float(warmup), measure=float(measure), arrivals=n, arrivals_lc=n_lc,
+                        t0=float(sim.simt))   # simulation time of the start: measured hour = t0 + warmup ...
         return True, (f"TRAFFIC: {n} arrivals ({n_lc} L+C) in {warmup + measure:.0f} s, "
                       f"seed {seed}, prediction error {eta} %, pad {pad}, {rule}")
 
