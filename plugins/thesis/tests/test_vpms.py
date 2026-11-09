@@ -5,7 +5,8 @@ Run from the bluesky folder:  python plugins/thesis/tests/test_vpms.py [shared|s
 warmup_s and measure_s: default 300 and 600 s, a short test; 3600 3600 is a full run as in the experiments)
 Checks: every drone lands; merge and touchdown intervals; losses of separation (32 m / 7.62 m);
 L+C drones that had to leave their wing behind a multicopter; the descent on the direct leg (fastest rate,
-no faster than 2 m/s at low speed, exactly 40 m at the merge point) and the no-go zone (decision 05-11-2026). """
+no faster than 2 m/s at low speed, exactly 40 m at the merge point) and the no-go zone (decision 05-11-2026);
+an odd number of transitions for every L+C created on its wing (decision 09-11-2026). """
 import os, sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, ROOT); os.chdir(ROOT)
@@ -156,3 +157,15 @@ for cfg in ("MC", "LC"):
         m = lambda c: np.mean([float(x[c]) for x in r])
         print(f"{cfg}: {len(r)} drones, {m('flight_time'):.0f} s in the structure, {m('energy_wh'):.1f} Wh, "
               f"hover {m('t_hover'):.0f} s, transitions {m('n_trans'):.1f}")
+# transitions per L+C (decision 09-11-2026): off and on the wing alternate and every L+C lands on its rotors, so an
+# L+C created on its wing lands with an odd number (1, 3, 5, ...); an even number means a transition was missed
+# or counted twice (block 11 missed every rotor -> wing transition)
+v_stall = mods["energy"].LC.v_stall
+below = {a for _, a, v, _ in vp.slow_entries if v < v_stall}          # created below stall: not on its wing
+lc_rows = [x for x in rows if x["config"] == "LC"]
+n_tr = {}
+for x in lc_rows:
+    n_tr[int(x["n_trans"])] = n_tr.get(int(x["n_trans"]), 0) + 1
+even = sorted(x["id"] for x in lc_rows if int(x["n_trans"]) % 2 == 0 and x["id"] not in below)
+print(f"L+C transitions per drone: {dict(sorted(n_tr.items()))}; even number (created on the wing): {len(even)} "
+      f"{even[:6]} (expected 0)")

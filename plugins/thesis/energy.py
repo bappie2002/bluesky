@@ -42,6 +42,16 @@ P_TRANS_WING = E_TRANS_WING_J / T_TRANS_WING               # mean power during t
 #   rotor -> wing: starts when a Lift+Cruise below stall is told to fly at or above stall
 #                  (its target airspeed), so the block also covers the acceleration; 15 s.
 # A new transition replaces a block that is still running.
+# Decision 09-11-2026 (block 13): "told" is the airspeed VPMS asks for (Vpms.fly reports it with tell()),
+# before VPMS raises the target step by step at the L+C acceleration of 0.83 m/s2 (block 11). With that
+# ramp the target was only about 0.4 m/s above the airspeed, the two crossed stall almost together and
+# no rotor -> wing transition was counted at all (an L+C that went back on its wing paid no block).
+# Without VPMS (SPD commands, test_energy.py) the autopilot target is used, as before. At most one
+# rotor -> wing block per time off the wing (before, a second one could start when the first 15 s ran
+# out before the wing was reached). An L+C that is back on its wing without a block (it was below stall
+# for less than one step of this plugin, so the moment it was told fell between two steps) gets its
+# block then. Off and on the wing then alternate: an L+C created on its wing lands with an odd number
+# of transitions (checked in test_vpms.py and analysis/delays.py).
 TO_ROTOR, TO_WING = 1, 2
 
 
@@ -68,11 +78,16 @@ class Energy(core.Entity):
             self.wh_wing = np.array([])
             self.wh_trans = np.array([])             # energy of transitions, both directions (Wh)
             self.n_trans = np.array([], dtype=int)   # number of transitions, both directions
+            self.v_told = np.array([])               # airspeed VPMS asks for (m/s); NaN = not told, use the
+                                                     # autopilot target (decision 09-11-2026)
+            self.wing_started = np.array([], dtype=bool)  # a rotor -> wing block started since it left the wing
 
     def create(self, n=1):
         super().create(n)
         self.is_lc[-n:] = [t.upper() in LC_TYPES for t in traf.type[-n:]]
         self.on_wing[-n:] = self.is_lc[-n:] & (traf.tas[-n:] >= LC.v_stall)
+        self.v_told[-n:] = np.nan
+        self.wing_started[-n:] = False
         self.soc[-n:] = 1.0
         self.soc_start[-n:] = 1.0
 
@@ -86,10 +101,17 @@ class Energy(core.Entity):
 
         # transitions: a block of fixed power and duration (see the top of this file)
         to_rotor = self.on_wing & ~wing                                  # just left the wing
-        to_wing = (self.is_lc & ~wing & (traf.aporasas.tas >= LC.v_stall)
-                   & ~((self.trans_kind == TO_WING) & (self.trans_left > 0)))   # told to fly on the wing
-        self.trans_left = np.where(to_rotor, T_TRANS, np.where(to_wing, T_TRANS_WING, self.trans_left))
-        self.trans_kind = np.where(to_rotor, TO_ROTOR, np.where(to_wing, TO_WING, self.trans_kind))
+        told = np.where(np.isnan(self.v_told), traf.aporasas.tas, self.v_told)   # airspeed asked for
+        started = self.wing_started & ~to_rotor                          # leaving the wing clears it
+        back = self.is_lc & wing & ~self.on_wing                         # back on the wing at this step
+        # told to fly on the wing, or back on it without a block: below stall for less than one step of this
+        # plugin, so the moment it was told fell between two steps (decision 09-11-2026)
+        to_wing = self.is_lc & ~started & ((~wing & (told >= LC.v_stall)) | back)
+        self.wing_started = started | to_wing
+        # both in one step (it dipped below stall and is already told to go back): two transitions, and the newer
+        # one, rotor -> wing, runs (decision 09-11-2026; before, the rotor -> wing one was lost)
+        self.trans_left = np.where(to_wing, T_TRANS_WING, np.where(to_rotor, T_TRANS, self.trans_left))
+        self.trans_kind = np.where(to_wing, TO_WING, np.where(to_rotor, TO_ROTOR, self.trans_kind))
         p_block = np.where(self.trans_kind == TO_WING, P_TRANS_WING, P_TRANS)
         t_trans = np.minimum(dt, self.trans_left)                     # s of this step in transition
         self.trans_left = np.maximum(self.trans_left - dt, 0.0)
@@ -103,11 +125,16 @@ class Energy(core.Entity):
         self.wh_rotor += np.where(self.mode == 1, e_flight, 0.0)
         self.wh_wing += np.where(self.mode == 2, e_flight, 0.0)
         self.wh_trans += e_trans
-        self.n_trans += to_rotor | to_wing
+        self.n_trans += to_rotor.astype(int) + to_wing.astype(int)
 
         used = e_flight + e_trans
         self.used_wh += used
         self.soc -= used / np.where(self.is_lc, LC.battery_wh, MC.battery_wh)
+
+    def tell(self, i, v):
+        """VPMS asks drone i to fly at airspeed v (m/s); a rotor -> wing transition starts from this
+        (decision 09-11-2026)."""
+        self.v_told[i] = v
 
     @stack.command(name="SOC")
     def soc_command(self, acid: "acid", value: float = -1.0):

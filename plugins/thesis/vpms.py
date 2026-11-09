@@ -635,6 +635,20 @@ def follow_speed(gap, v_lead, v_own, lc):
     return float(np.clip(min(v_lead + (gap - gap_needed) / T_CLOSE, v_stop), 0.0, v_own))
 
 
+_ENERGY = {"cls": None, "n": -1}
+
+
+def energy():
+    """The ENERGY plugin, or None when it is not loaded (looked up again only after new modules were loaded)."""
+    if _ENERGY["cls"] is None and _ENERGY["n"] != len(sys.modules):
+        _ENERGY["n"] = len(sys.modules)
+        for name, mod in list(sys.modules.items()):
+            if name.endswith(".energy") and hasattr(mod, "Energy"):
+                _ENERGY["cls"] = mod.Energy
+                break
+    return _ENERGY["cls"].implinstance() if _ENERGY["cls"] is not None else None
+
+
 def flightlog():
     for name, mod in sys.modules.items():
         if name.endswith(".flightlog") and hasattr(mod, "FlightLog"):
@@ -863,6 +877,9 @@ class Vpms(core.Entity):
             traf.swlnav[i] = False
         if tas is not None:
             lc = int(self.is_lc[i])
+            en = energy()
+            if en is not None:                  # ENERGY starts a rotor -> wing transition from the speed asked
+                en.tell(i, tas)                 # for, not from the ramped target below (decision 09-11-2026)
             if A_ACC[lc] < A_DECEL[lc] and tas > traf.tas[i]:   # BlueSky has one ax_max per type (= A_DECEL):
                 tas = min(tas, float(traf.tas[i]) + A_ACC[lc] * DT)   # speed up at A_ACC (decision 09-11-2026)
             traf.selspd[i] = vtas2cas(max(tas, 0.0), traf.alt[i])
