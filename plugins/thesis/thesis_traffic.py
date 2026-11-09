@@ -6,7 +6,8 @@ Traffic (methodology, Traffic and Scenarios):
   - gate: uniform over the four gates (Chang et al. 2026)
   - type: 50% multicopter, 50% Lift+Cruise
   - state of charge at the gate: uniform 40-80%, the same for both types
-  - run: WARMUP s run-in + MEASURE s measured (Wille et al. 2026). Only drones that
+  - run: WARMUP s run-in (20 min since 09-11-2026, from a warm-up check; was 1 h) + MEASURE s measured
+    (Wille et al. 2026). Only drones that
     arrive in the measured window count; the run stops when they have all landed.
 Disturbances (no wind in this study, decision 27-10-2026):
   - error in the predicted flight time to the merge point, per drone normally distributed
@@ -32,7 +33,8 @@ points (about 55 m apart), so there is no rule between them. Bunches of arrivals
 structure: the lane rules restore GAP_MIN (48 m), drones fly slower on the arc and hover at its end.
 Safety net (decision 06-11-2026): a drone is created at VPMS entry_speed, which is its entry speed except when
 the drone ahead in its lane is slower than the hand-over rule assumes; it is then created slower, so that it
-stays SEP_H behind, and the event slow_entry is logged and counted (expected none below capacity).
+stays SEP_H behind, and the event slow_entry is logged and counted (expected none below capacity). When no speed
+works (decision 09-11-2026), the drone is held in the transit airspace until one does; also a slow_entry.
 
 Needs VPMS (and ENERGY for the state of charge). Command:
   TRAFFIC demand seed [eta_err_pct] [pad] [warmup] [measure]
@@ -58,7 +60,9 @@ DEMAND_LEVELS = (30, 45, 60, 75, 90)   # drones per hour (33-100% of 90/h at 40 
 ETA_LEVELS = (0, 5, 10, 20)            # % standard deviation of the prediction error
 SEP_TARGETS = (30, 35, 40, 45, 60)     # s, target separations in the separation analysis
 REPETITIONS = 100                      # seeds per setting (Song 2023); more if the CI is too wide
-WARMUP, MEASURE = 3600.0, 3600.0       # s
+WARMUP, MEASURE = 1200.0, 3600.0       # s: run-in and measured hour. Decision 09-11-2026: run-in 20 min (was 1 h, as
+                                       #    Wille et al. 2026): the warm-up check (probes_2910/welch.py, 20 seeds at 60 and
+                                       #    75 drones/h) shows no build-up after the first 5-10 min
 SHARE_LC = 0.5
 SOC_RANGE = (0.40, 0.80)
 T_PAD_BASE = 6.0                       # s on the pad, the same for every drone (decision 05-11-2026; was
@@ -125,6 +129,7 @@ class Traffic(core.Entity):
 
     def clear(self):
         self.plan, self.next, self.waiting, self.measured, self.done = None, 0, [], set(), False
+        self.held = {}                            # k -> time from which the safety net held the drone in transit
         self.t0, self.warmup, self.measure = 0.0, WARMUP, MEASURE
 
     def reset(self):
@@ -141,8 +146,8 @@ class Traffic(core.Entity):
             self.waiting.append(self.next)
             self.next += 1
         for k in list(self.waiting):             # in order of arrival, at the drawn time (option B)
-            self.spawn(k, vpms)
-            self.waiting.remove(k)
+            if self.spawn(k, vpms):              # False: held in transit by the safety net (decision 09-11-2026)
+                self.waiting.remove(k)
         self.check_end()
 
     def spawn(self, k, vpms):
@@ -152,6 +157,12 @@ class Traffic(core.Entity):
         geo = sys.modules[type(vpms).__module__]              # the VPMS module: geometry
         lat, lon, alt, hdg = geo.gate(g, lc)                  # entry point of this gate and type
         v0, slow = vpms.entry_speed(g, lc)                    # V_ENTRY; lower only as the safety net (06-11-2026)
+        if v0 is None:                                        # no speed works: hold it in transit (09-11-2026)
+            self.held.setdefault(k, sim.simt)
+            return False
+        if k in self.held:
+            slow = (f"held {sim.simt - self.held.pop(k):.1f} s in transit, then {v0:.1f} m/s"
+                    + (f" ({slow})" if slow else ""))
         vpms.register(acid, g, lc, sim.simt, float(p["t_pad"][k]), float(p["eta_err"][k]))
         traf.cre(acid, TYPE[lc], lat, lon, hdg, alt, vtas2cas(v0, alt))
         wait = sim.simt - (self.t0 + p["time"][k])
@@ -170,6 +181,7 @@ class Traffic(core.Entity):
             vpms.slow_entries.append((sim.simt, acid, v0, slow))
             if fl is not None and fl.files and i >= 0:
                 fl.event(i, "slow_entry", slow)
+        return True
 
     def check_end(self):
         if self.done or self.next < len(self.plan["time"]) or self.waiting:

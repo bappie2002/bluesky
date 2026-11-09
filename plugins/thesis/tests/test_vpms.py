@@ -45,10 +45,17 @@ print(f"Entry offset {V.entry_offset():.1f} m per side (speed variant; computed 
       + (f", L+C behind MC {V.handover_time(False, True):.1f} s" if V.VARIANT == "shared" else
          " (MC and L+C have their own entry points)"))
 cleared_at = {}                        # acid -> time of its go (FCFS order check, decision 06-11-2026)
+prev_tas, acc_seen, dec_seen = {}, [0.0, 0.0], [0.0, 0.0]   # observed acceleration per type (09-11-2026)
 while bs.sim.simt < float(warmup) + float(measure) + 3000 and not sc.done:
     bs.sim.step()
     n = bs.traf.ntraf
     spawned.update(bs.traf.id)
+    for i, acid in enumerate(bs.traf.id):                                  # acceleration per type (09-11-2026)
+        if acid in prev_tas and vp.state[i] > 0:
+            a_obs = (float(bs.traf.tas[i]) - prev_tas[acid]) / V.DT
+            k = int(vp.is_lc[i])
+            acc_seen[k], dec_seen[k] = max(acc_seen[k], a_obs), max(dec_seen[k], -a_obs)
+        prev_tas[acid] = float(bs.traf.tas[i])
     for i, acid in enumerate(bs.traf.id):
         if vp.state[i] == V.DIRECT and acid not in cleared_at:
             cleared_at[acid] = bs.sim.simt
@@ -116,6 +123,9 @@ print(f"Touchdown intervals:    min {touch.min():.1f} s  (never below {t_min:.1f
       f"one drone at a time in the final descent when the target is at least 33.5 s)")
 print(f"Arcs: overshoot to the inside {max(-overshoot, 0.0):.1f} m; largest deviation after the first 20 deg {max_radial:.1f} m")
 print(f"Losses of separation (32 m and 7.62 m): {len(los_pairs)} pairs {sorted(los_pairs)[:6]}")
+print(f"Observed acceleration: MC up to {acc_seen[0]:.2f}, braking {dec_seen[0]:.2f} m/s2; L+C up to {acc_seen[1]:.2f}, "
+      f"braking {dec_seen[1]:.2f} m/s2 (at most MC {V.A_ACC[0]:.2f} / {V.A_DECEL[0]:.2f}, L+C {V.A_ACC[1]:.2f} / "
+      f"{V.A_DECEL[1]:.2f}; decision 09-11-2026)")
 print(f"Slow entries (created slower than the entry speed, safety net of 06-11-2026): {len(vp.slow_entries)} "
       f"(expected 0 below capacity; entry leg {V.GATE_MARGIN:g} m)")
 for t_se, acid_se, v_se, note_se in vp.slow_entries[:6]:
@@ -136,7 +146,7 @@ print(f"L+C leaders that sped up to restore {V.GAP_MIN:.0f} m: {len(sped_up)} {s
 for typ, (vmax, vsmin, vsmax, axmax, hmax) in sorted(perf_seen.items()):
     print(f"BlueSky limits {typ}: speed max {vmax:.1f} m/s, vertical {vsmin:.1f} to {vsmax:.1f} m/s, "
           f"acceleration {axmax:.2f} m/s2, ceiling {hmax:.0f} m (expected for GMC/GLC: 17.0 / 15.4, -5 to 5, "
-          f"{V.A_DECEL:.2f}, 150)")
+          f"MC {V.A_DECEL[0]:.2f} / L+C {V.A_DECEL[1]:.2f}, 150)")
 holds = sum(1 for t, _ in vp.merges)  # placeholder to keep names short
 import csv
 rows = list(csv.DictReader(open(f"output/vpms_{variant}/flights.csv")))

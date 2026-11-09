@@ -98,7 +98,11 @@ position held), for later research; this study does not use it.
 Flight performance in BlueSky (decision 04-11-2026): the drones are the BlueSky types GMC and GLC, the
 generic drones of this thesis, with their own limits in BlueSky's OpenAP type file
 (bluesky/resources/performance/OpenAP/rotor/aircraft.json): speed MC 17 m/s, L+C 15.4 m/s; vertical
-speed 5 m/s up and down; ceiling 150 m; acceleration and braking A_DECEL (0.93 m/s2) for both.
+speed 5 m/s up and down; ceiling 150 m; acceleration and braking A_DECEL (0.93 m/s2) for both (until 09-11-2026).
+Decision 09-11-2026: acceleration and braking per type (A_ACC, A_DECEL): MC 3.5 m/s2 both ways (ax_max of GMC);
+L+C 1.24 m/s2 braking (ax_max of GLC) and 0.83 m/s2 speeding up, which VPMS sets by raising the commanded
+speed step by step (fly), because BlueSky has one ax_max per type for both. The speed limits are those of the
+types; the highest speeds VPMS commands are lower: MC 9.0 m/s (v_r), L+C 15.4 m/s (V_LC_MAX).
 Before, they were the DJI M200 and the Amazon octocopter of that file, with their limits.
 
 Drones are handed to VPMS by the TRAFFIC plugin (register); other drones are ignored.
@@ -183,9 +187,20 @@ V_LC_MAX = 15.4               # m/s: an L+C leader speeds up to at most this to 
                               #    speed of Metropolis II, so that all speeds lie within the conditions of its
                               #    separation minima (was 16.7 m/s, the calibration point of the wing model).
                               #    Also v_max of GLC in BlueSky
-A_DECEL = LC.v_arc ** 2 / (2 * 83.0)  # m/s2: L+C stops in 83 m (Mathur transition); also MC
-A_ACC = A_DECEL               # m/s2: speeding up (decision 04-11-2026): BlueSky accelerates and brakes GMC and
-                              #    GLC at one rate, ax_max in their type file = A_DECEL (was 2.0, an assumption)
+# Decision 09-11-2026: acceleration and braking per type, (MC, L+C). Before: 0.93 m/s2 for both,
+# 12.4^2 / (2 x 83 m), a misreading of Mathur & Atkins (2025, Table 9): 83 m is the distance flown during their
+# back-transition of 10 s, not a stopping distance at a constant deceleration from 12.4 m/s.
+A_DECEL = (3.5, round(LC.v_arc / 10.0, 4))  # m/s2 braking. MC: the value of BlueSky for every rotorcraft
+                              #    (axmax_rotor in perfoap.py), about 20 deg tilt, within the 25 deg bank of the
+                              #    turns and below the 6.9 m/s2 that the 35 deg tilt limit of the DJI M100 allows.
+                              #    L+C: 1.24, from its wing speed to hover in 10 s, the back-transition (P2Q) of
+                              #    Mathur & Atkins (2025, Table 9) and the to_rotor block of ENERGY; below the
+                              #    1.5-2.0 of the PX4 settings of the Baby Shark 260 and the DeltaQuad. ax_max of
+                              #    GMC and GLC in the type file of BlueSky
+A_ACC = (3.5, round(LC.v_arc / 15.0, 4))    # m/s2 speeding up. MC: as braking. L+C: 0.83, from hover to its wing
+                              #    speed in 15 s, the forward transition (Q2P, Table 9) and the to_wing block of
+                              #    ENERGY. Lower than A_DECEL: VPMS raises the commanded speed by at most
+                              #    A_ACC x DT per update (fly)
 ARRIVE_R, ARRIVE_V = 0.5, 0.5 # m, m/s: a drone has arrived at the end of its arc, or at the merge point, when it
                               #    is within ARRIVE_R of it and slower than ARRIVE_V: a standstill on the point
                               #    itself, as the prediction assumes (decision 04-11-2026)
@@ -243,7 +258,7 @@ def clear_distance():
     key = (VARIANT, T_DESIGN, K_SPACING, H_MERGE)
     if key not in _CLEAR:
         r = arc_radius(True)
-        px, py, pv = direct_path(0.0, r, V_ARC[1], 180.0, V_DIRECT[1])
+        px, py, pv = direct_path(0.0, r, V_ARC[1], 180.0, V_DIRECT[1], 1)
         worst = 0.0
         for par in (0, 1):
             h0, h_other = H_ARC[par], H_ARC[1 - par]
@@ -335,14 +350,14 @@ def handover_gap(h, lead_lc, foll_lc, dt_m=0.01):
     there or just after the leader's turn, where the difference is small (checked with restoreprobe)."""
     turn = [gate_distance() - arc_start_along(lc) - look_ahead(V_ENTRY[lc]) - V_ENTRY[lc] * DT for lc in (0, 1)]
     n = int((h + 60.0) / dt_m) + 1
-    dec, acc = A_DECEL * dt_m, A_ACC * dt_m
+    dec, acc = [a * dt_m for a in A_DECEL], [a * dt_m for a in A_ACC]   # per type (decision 09-11-2026)
     lead, foll = int(lead_lc), int(foll_lc)
     v, s = V_ENTRY[lead], 0.0
     v_lead, s_lead = [0.0] * n, [0.0] * n
     for k in range(n):                                   # leader, from the entry point at t = 0
         v_lead[k], s_lead[k] = v, s
         want = V_ENTRY[lead] if s < turn[lead] else V_ARC[lead]
-        v += max(-dec, min(acc, want - v))
+        v += max(-dec[lead], min(acc[lead], want - v))
         s += v * dt_m
     k0, kd = int(round(h / dt_m)), int(round(DT / dt_m))
     v, s, g_min = V_ENTRY[foll], 0.0, np.inf
@@ -350,7 +365,7 @@ def handover_gap(h, lead_lc, foll_lc, dt_m=0.01):
         g_min = min(g_min, s_lead[k] - s)
         if k >= k0 + kd:
             want = min(V_ENTRY[foll] if s < turn[foll] else V_ARC[foll], v_lead[k - kd])
-            v += max(-dec, min(acc, want - v))
+            v += max(-dec[foll], min(acc[foll], want - v))
         s += v * dt_m
     return g_min
 
@@ -394,21 +409,21 @@ def entry_gap(v0, s_lead, v_lead, v_cap, lead_on_arc, lead_lc, foll_lc, horizon=
     turn = [gate_distance() - arc_start_along(lc) - look_ahead(V_ENTRY[lc]) - V_ENTRY[lc] * DT for lc in (0, 1)]
     lead, foll = int(lead_lc), int(foll_lc)
     n, kd = int(horizon / dt_m) + 1, int(round(DT / dt_m))
-    dec, acc = A_DECEL * dt_m, A_ACC * dt_m
+    dec, acc = [a * dt_m for a in A_DECEL], [a * dt_m for a in A_ACC]   # per type (decision 09-11-2026)
     v, s = v_lead, s_lead
     v_l, s_l = [0.0] * n, [0.0] * n
     for k in range(n):                                            # the drone ahead
         v_l[k], s_l[k] = v, s
         want = V_ARC[lead] if (lead_on_arc or s >= turn[lead]) else V_ENTRY[lead]
-        want = min(want, v_cap, np.sqrt(2 * A_DECEL * max(end - s, 0.0)))
-        v += max(-dec, min(acc, want - v))
+        want = min(want, v_cap, np.sqrt(2 * A_DECEL[lead] * max(end - s, 0.0)))
+        v += max(-dec[lead], min(acc[lead], want - v))
         s += v * dt_m
     v, s, g_min = v0, 0.0, np.inf
     for k in range(n):                                            # the new drone, from its entry point
         g_min = min(g_min, s_l[k] - s)
         if k >= kd:
             want = min(V_ENTRY[foll] if s < turn[foll] else V_ARC[foll], v_l[k - kd])
-            v += max(-dec, min(acc, want - v))
+            v += max(-dec[foll], min(acc[foll], want - v))
         s += v * dt_m
     return g_min
 
@@ -445,15 +460,16 @@ def look_ahead(gs):
     return max(L_MIN, 2 * gs ** 2 / (9.81 * np.tan(np.radians(BANK))))
 
 
-def time_to_merge(dist, v):
-    """Time (s) to fly dist at speed v and stop at the merge point with deceleration A_DECEL."""
-    d_stop = v ** 2 / (2 * A_DECEL)
+def time_to_merge(dist, v, lc):
+    """Time (s) to fly dist at speed v and stop at the merge point with the deceleration of type lc."""
+    a = A_DECEL[int(lc)]
+    d_stop = v ** 2 / (2 * a)
     if dist > d_stop:
-        return (dist - d_stop) / v + v / A_DECEL
-    return np.sqrt(2 * dist / A_DECEL)
+        return (dist - d_stop) / v + v / a
+    return np.sqrt(2 * dist / a)
 
 
-def predict_time(dist, gs, v0=None, turn_deg=0.0):
+def predict_time(dist, gs, v0, turn_deg, lc):
     """Predicted time (s) from now until VPMS sees the drone standing still on the merge point (decision
     05-11-2026, T5). VPMS flies the direct leg ahead with its own rules, step by step (DT), as BlueSky does:
       - every update the track points at the merge point and the speed is min(gs, sqrt(2 A_DECEL (d - v DT))):
@@ -465,7 +481,9 @@ def predict_time(dist, gs, v0=None, turn_deg=0.0):
     to 5.7 m/s; a drone in a hold speeds up from 0), the turn towards the merge point (an L+C on its arc
     turns about 85 deg) and the update interval. Not in it: wind (none in this study) and waiting for a merge
     point that is not free (the sequencer plans T_TARGET apart). v0 None: already at gs and on track.
-    The drone starts at (0, 0) with its track turn_deg away from the merge point at (0, dist)."""
+    The drone starts at (0, 0) with its track turn_deg away from the merge point at (0, dist). lc: its type
+    (A_DECEL and A_ACC per type, decision 09-11-2026)."""
+    dec, acc = A_DECEL[int(lc)], A_ACC[int(lc)]
     v = gs if v0 is None else float(v0)
     px, py, hdg, t = 0.0, 0.0, np.radians(min(abs(turn_deg), 180.0)), 0.0
     c_v, c_hdg = 0.0, 0.0
@@ -475,8 +493,8 @@ def predict_time(dist, gs, v0=None, turn_deg=0.0):
         if d < ARRIVE_R and v < ARRIVE_V:                            # VPMS update: arrived?
             return t
         c_hdg = np.arctan2(-px, dist - py)                           # VPMS update: commands
-        c_v = min(gs, np.sqrt(2 * A_DECEL * max(d - v * DT, 0.0)))
-        v += max(-A_DECEL * DT, min(A_ACC * DT, c_v - v))            # BlueSky step: speed,
+        c_v = min(gs, np.sqrt(2 * dec * max(d - v * DT, 0.0)))
+        v += max(-dec * DT, min(acc * DT, c_v - v))                  # BlueSky step: speed,
         rate = g_tan / max(v, 1e-6) * DT
         hdg += max(-rate, min(rate, (c_hdg - hdg + np.pi) % (2 * np.pi) - np.pi))   # heading,
         px += v * DT * np.sin(hdg)                                   # position
@@ -485,10 +503,11 @@ def predict_time(dist, gs, v0=None, turn_deg=0.0):
     return t
 
 
-def direct_path(x, y, v, hdg, gs):
+def direct_path(x, y, v, hdg, gs, lc):
     """The direct leg flown ahead, as predict_time does it, but in the pad frame: from (x, y) m (east, north) at
     speed v (m/s) and heading hdg (deg), positions and speeds at every update until the drone stands still on
-    the merge point (decision 05-11-2026, for the descent plan)."""
+    the merge point (decision 05-11-2026, for the descent plan). lc: its type (decision 09-11-2026)."""
+    dec, acc = A_DECEL[int(lc)], A_ACC[int(lc)]
     g_tan = 9.81 * np.tan(np.radians(BANK))
     h = np.radians(hdg)
     xs, ys, vs = [x], [y], [v]
@@ -497,8 +516,8 @@ def direct_path(x, y, v, hdg, gs):
         if d < ARRIVE_R and v < ARRIVE_V:
             break
         c_hdg = np.arctan2(-x, -y)                                    # VPMS: track at the merge point,
-        c_v = min(gs, np.sqrt(2 * A_DECEL * max(d - v * DT, 0.0)))   # speed one update early
-        v += max(-A_DECEL * DT, min(A_ACC * DT, c_v - v))             # BlueSky: speed,
+        c_v = min(gs, np.sqrt(2 * dec * max(d - v * DT, 0.0)))       # speed one update early
+        v += max(-dec * DT, min(acc * DT, c_v - v))                   # BlueSky: speed,
         rate = g_tan / max(v, 1e-6) * DT
         h += max(-rate, min(rate, (c_hdg - h + np.pi) % (2 * np.pi) - np.pi))   # heading,
         x += v * DT * np.sin(h)                                       # position
@@ -588,7 +607,7 @@ def plan_descent(g, is_lc, x, y, v, hdg, h0, gs, avoid=True):
     its height at every update (descent_heights). Forbidden: within SEP_H of another flow (an arc or entry leg,
     not its own lane, which the lane rules keep apart) and less than K_SPACING x SEP_V above or below it.
     None if no such descent exists (a no-go zone); avoid=False: without other flows."""
-    px, py, pv = direct_path(x, y, v, hdg, gs)
+    px, py, pv = direct_path(x, y, v, hdg, gs, is_lc)
     grid = height_grid(h0)
     forbid = np.zeros((len(px), len(grid)), dtype=bool)
     if avoid:
@@ -607,11 +626,12 @@ def call_number(acid):
     return int(digits) if digits else 0
 
 
-def follow_speed(gap, v_lead, v_own):
-    """Speed of a follower at this gap (m) behind a leader at v_lead (m/s): no overtaking. It closes
-    or opens the gap to the wanted spacing in about T_CLOSE s, and can always stop GAP_MIN behind."""
+def follow_speed(gap, v_lead, v_own, lc):
+    """Speed of a follower of type lc at this gap (m) behind a leader at v_lead (m/s): no overtaking. It closes
+    or opens the gap to the wanted spacing in about T_CLOSE s, and can always slow to the leader's speed before it
+    is GAP_MIN behind it, with its own deceleration (per type, decision 09-11-2026)."""
     gap_needed = max(T_TARGET * v_lead, GAP_MIN) if ARC_SPACING == "time" else GAP_MIN
-    v_stop = v_lead + np.sqrt(2 * A_DECEL * max(gap - GAP_MIN, 0.0))
+    v_stop = v_lead + np.sqrt(2 * A_DECEL[int(lc)] * max(gap - GAP_MIN, 0.0))
     return float(np.clip(min(v_lead + (gap - gap_needed) / T_CLOSE, v_stop), 0.0, v_own))
 
 
@@ -684,7 +704,9 @@ class Vpms(core.Entity):
         at which the new drone stays SEP_H behind it (entry_gap). That speed was lost in the transit airspace,
         so TRAFFIC logs it as an event slow_entry and it is counted. The drone ahead is the nearest drone of the
         lane (entry leg, arc or hold), at its distance along the lane, or at its straight-line distance from the
-        entry point when that is shorter (while it cuts the corner onto its arc)."""
+        entry point when that is shorter (while it cuts the corner onto its arc). Decision 09-11-2026: when no speed
+        works, not even a standstill (the drone ahead is still that close to the entry point), it returns None and
+        TRAFFIC holds the drone in the transit airspace until an update in which a speed does work; also counted."""
         lc = int(is_lc)
         v_full = V_ENTRY[lc]
         key = arc_key(g, is_lc)
@@ -707,7 +729,7 @@ class Vpms(core.Entity):
             if best is None or s < best[0]:
                 best = (s, j)
         s_lead, j = best
-        if s_lead - SEP_H >= v_full * DT + v_full ** 2 / (2 * A_DECEL):
+        if s_lead - SEP_H >= v_full * DT + v_full ** 2 / (2 * A_DECEL[lc]):
             return v_full, ""                          # far enough to stop behind it, whatever it does
         hold = self.state[j] == HOLD
         v_lead = 0.0 if hold else float(traf.tas[j])
@@ -715,6 +737,9 @@ class Vpms(core.Entity):
         args = (s_lead, v_lead, v_cap, self.state[j] != ENTRY, bool(self.is_lc[j]), bool(is_lc))
         if entry_gap(v_full, *args) >= SEP_H:
             return v_full, ""
+        if entry_gap(0.0, *args) < SEP_H:              # no speed works: held in transit (decision 09-11-2026)
+            return None, (f"{traf.id[j]} ({STATE_NAMES[self.state[j]]}) {s_lead:.0f} m ahead at {v_lead:.1f} m/s, "
+                          f"commanded {v_cap:.1f} m/s")
         lo, hi = 0.0, v_full
         while hi - lo > 0.05:
             mid = 0.5 * (lo + hi)
@@ -775,7 +800,7 @@ class Vpms(core.Entity):
             if self.is_lc[i] and gap > SEP_H + 2.0 and traf.tas[j] >= V_ARC[1] - 0.1:
                 v = min(v, float(traf.tas[j]))      # an L+C behind a leader on its wing: do not close in,
             else:                                   # but do not fall back below stall either
-                v = min(v, follow_speed(gap, traf.tas[j], v))
+                v = min(v, follow_speed(gap, traf.tas[j], v, self.is_lc[i]))
         return v
 
     def lane_speed(self, i, lead, gap, v_lead, v, restore=()):
@@ -786,7 +811,7 @@ class Vpms(core.Entity):
         follower slows with it (and leaves its wing): the fall-back. Otherwise the normal rule."""
         if self.is_lc[i] and (lead in restore or self.speedup[lead]) and gap > SEP_H + 2.0:
             return float(min(v, v_lead))
-        return follow_speed(gap, v_lead, v)
+        return follow_speed(gap, v_lead, v, self.is_lc[i])
 
     def restore_flags(self, idx, x, y, progress, d_start):
         """Decision 03-11-2026: which L+C leaders must speed up. Per lane the drones in order (entry leg:
@@ -837,6 +862,9 @@ class Vpms(core.Entity):
             traf.ap.trk[i] = track % 360
             traf.swlnav[i] = False
         if tas is not None:
+            lc = int(self.is_lc[i])
+            if A_ACC[lc] < A_DECEL[lc] and tas > traf.tas[i]:   # BlueSky has one ax_max per type (= A_DECEL):
+                tas = min(tas, float(traf.tas[i]) + A_ACC[lc] * DT)   # speed up at A_ACC (decision 09-11-2026)
             traf.selspd[i] = vtas2cas(max(tas, 0.0), traf.alt[i])
             traf.swvnavspd[i] = False
         if alt is not None:
@@ -960,7 +988,7 @@ class Vpms(core.Entity):
                     self.hover(i, self.hx[i], self.hy[i])
                     continue
                 v = V_LC_MAX if i in restore else V_ARC[lc]
-                v = min(v, np.sqrt(2 * A_DECEL * d_own))       # can always stop at the end of its arc
+                v = min(v, np.sqrt(2 * A_DECEL[lc] * d_own))   # can always stop at the end of its arc
                 if rank > 0:                                   # drone ahead on the same arc
                     lead = members[rank - 1]
                     # straight-line distance, as in the separation check (decision 04-11-2026; before,
@@ -971,7 +999,7 @@ class Vpms(core.Entity):
                     v = self.lane_speed(i, lead, gap, v_lead, v, restore)
                     if self.state[lead] == ARC:                # the leader will stop at the end of the
                         d_end = r * np.radians(max(ARC_DEG - progress[i], 0.0))   # arc if not cleared:
-                        v = min(v, np.sqrt(2 * A_DECEL * max(d_end - GAP_MIN, 0.0)))  # stop GAP_MIN before
+                        v = min(v, np.sqrt(2 * A_DECEL[lc] * max(d_end - GAP_MIN, 0.0)))  # stop GAP_MIN before
                 v = self.departing_limit(i, idx, x, y, dist, v)
                 if i in restore:
                     self.set_speedup(i, v > V_ARC[lc] + 0.1, "for {}, gap {:.0f} m".format(*restore[i]))
@@ -998,7 +1026,7 @@ class Vpms(core.Entity):
         if i is not None:
             gs = self.cruise_gs(i, -y[i] / dist[i], -x[i] / dist[i])
             turn = abs((traf.hdg[i] - np.degrees(np.arctan2(-x[i], -y[i])) + 180) % 360 - 180)
-            t = predict_time(dist[i], gs, traf.tas[i], turn)      # until it stands still on the merge point
+            t = predict_time(dist[i], gs, traf.tas[i], turn, self.is_lc[i])   # until standstill on the merge point
             t_pred = t * (1 + self.eta_err[i])                     # what the sequencer believes
             # exactly T_TARGET: the prediction is exact and lies on the update grid (decision 05-11-2026;
             # before, + DT as a buffer for the old formula, which made the smallest interval 40.5 s)
@@ -1047,7 +1075,7 @@ class Vpms(core.Entity):
             # brake one update early: the speed set now holds for DT, so a drone that brakes on the curve
             # sqrt(2 a d) itself starts up to DT late and overshoots the point (decision 05-11-2026, T5)
             v = min(self.cruise_gs(i, un, ue),
-                    np.sqrt(2 * A_DECEL * max(dist[i] - stop - traf.gs[i] * DT, 0.0)))
+                    np.sqrt(2 * A_DECEL[int(self.is_lc[i])] * max(dist[i] - stop - traf.gs[i] * DT, 0.0)))
             self.fly_ground(i, v * un, v * ue)
             # height: the plan made at the clearance, one update ahead (decision 05-11-2026; it replaces keeping
             # the arc height until SEP_H inside the arc and then at most 2 m/s, which the plan contains)
