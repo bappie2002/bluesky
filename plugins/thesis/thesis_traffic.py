@@ -61,7 +61,7 @@ ETA_LEVELS = (0, 5, 10, 20)            # % standard deviation of the prediction 
 SEP_TARGETS = (30, 35, 40, 45, 60)     # s, target separations in the separation analysis
 REPETITIONS = 100                      # seeds per setting (Song 2023); more if the CI is too wide
 WARMUP, MEASURE = 1200.0, 3600.0       # s: run-in and measured hour. Decision 09-11-2026: run-in 20 min (was 1 h, as
-                                       #    Wille et al. 2026): the warm-up check (probes_2910/welch.py, 20 seeds at 60 and
+                                       #    Wille et al. 2026): the warm-up check (experimenten/ontwerpchecks/welch.py, 20 seeds at 60 and
                                        #    75 drones/h) shows no build-up after the first 5-10 min
 SHARE_LC = 0.5
 SOC_RANGE = (0.40, 0.80)
