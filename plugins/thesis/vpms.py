@@ -397,28 +397,39 @@ def handover_time(lead_lc, foll_lc):
     return _HANDOVER[key]
 
 
-def entry_gap(v0, s_lead, v_lead, v_cap, lead_on_arc, lead_lc, foll_lc, horizon=60.0, dt_m=0.02):
+def entry_gap(v0, s_lead, v_lead, v_cap, lead_on_arc, lead_lc, foll_lc, horizon=60.0, dt_m=0.02, ahead=()):
     """Smallest distance (m) along the lane between a drone created now at its entry point at v0 m/s and the
     drone ahead in its lane (decision 06-11-2026, for entry_speed). The model of handover_gap, but from the real
     state of the drone ahead: s_lead m ahead at v_lead m/s, flying no faster than it is commanded now (v_cap)
     and than its own lane speeds (V_ENTRY until its turn onto the arc, then V_ARC, braking to a standstill at
     the end of its arc), at A_DECEL / A_ACC. The new drone keeps v0 for one update (DT), then flies no faster
-    than its own lane speeds and than the drone ahead flew DT earlier."""
+    than its own lane speeds and than the drone ahead flew DT earlier.
+    Decision 10-11-2026 (block 16, after run 01): `ahead` holds the other drones of the lane in front of the
+    drone ahead, front first, as (s, v, v_cap, on_arc, is_lc). They are flown ahead in the same way, each one
+    behind the one in front of it with the lane rule (follow_speed), and so is the drone ahead itself. Before,
+    the drone ahead was assumed to keep at least its present command; in run 01 an L+C that was still braking
+    behind a multicopter on a shared arc slowed further, and the L+C created behind it came to 31.5-31.9 m."""
     leg = gate_distance() - arc_start_along(foll_lc)              # entry leg (m): one lane, one arc
     end = leg + arc_radius(foll_lc) * np.radians(ARC_DEG)         # end of the arc, along the lane
     turn = [gate_distance() - arc_start_along(lc) - look_ahead(V_ENTRY[lc]) - V_ENTRY[lc] * DT for lc in (0, 1)]
     lead, foll = int(lead_lc), int(foll_lc)
     n, kd = int(horizon / dt_m) + 1, int(round(DT / dt_m))
     dec, acc = [a * dt_m for a in A_DECEL], [a * dt_m for a in A_ACC]   # per type (decision 09-11-2026)
-    v, s = v_lead, s_lead
-    v_l, s_l = [0.0] * n, [0.0] * n
-    for k in range(n):                                            # the drone ahead
-        v_l[k], s_l[k] = v, s
-        want = V_ARC[lead] if (lead_on_arc or s >= turn[lead]) else V_ENTRY[lead]
-        want = min(want, v_cap, np.sqrt(2 * A_DECEL[lead] * max(end - s, 0.0)))
-        v += max(-dec[lead], min(acc[lead], want - v))
-        s += v * dt_m
+    front = None                                                  # (speeds, positions) of the drone in front
+    for (s, v, cap, on_arc, lc) in list(ahead) + [(s_lead, v_lead, v_cap, lead_on_arc, lead_lc)]:
+        lc = int(lc)
+        v_l, s_l = [0.0] * n, [0.0] * n
+        for k in range(n):                                        # the drones ahead, front first
+            v_l[k], s_l[k] = v, s
+            want = V_ARC[lc] if (on_arc or s >= turn[lc]) else V_ENTRY[lc]
+            want = min(want, cap, np.sqrt(2 * A_DECEL[lc] * max(end - s, 0.0)))
+            if front is not None:                                 # behind the drone in front: the lane rule
+                want = min(want, follow_speed(front[1][k] - s, front[0][k], want, lc))
+            v += max(-dec[lc], min(acc[lc], want - v))
+            s += v * dt_m
+        front = (v_l, s_l)
     v, s, g_min = v0, 0.0, np.inf
+    v_l, s_l = front
     for k in range(n):                                            # the new drone, from its entry point
         g_min = min(g_min, s_l[k] - s)
         if k >= kd:
@@ -732,13 +743,14 @@ class Vpms(core.Entity):
         ex, ey = offset_xy(g, is_lc, gate_distance())                 # the entry point
         tx, ty = arc_start(g, is_lc)
         leg = gate_distance() - arc_start_along(is_lc)
-        best = None
+        best, alongs = None, []
         for k, j in enumerate(lane):
             if self.state[j] == ENTRY:
                 along = leg - np.hypot(tx - x[k], ty - y[k])
             else:
                 p = ((np.degrees(np.arctan2(x[k], y[k])) - arc_start_bearing(g, is_lc)) * ARC_DIR) % 360
                 along = leg + arc_radius(is_lc) * np.radians(0.0 if p > 300 else p)
+            alongs.append((float(along), j))
             s = float(min(along, np.hypot(x[k] - ex, y[k] - ey)))
             if best is None or s < best[0]:
                 best = (s, j)
@@ -749,15 +761,25 @@ class Vpms(core.Entity):
         v_lead = 0.0 if hold else float(traf.tas[j])
         v_cap = 0.0 if hold else float(vcas2tas(traf.selspd[j], traf.alt[j]))
         args = (s_lead, v_lead, v_cap, self.state[j] != ENTRY, bool(self.is_lc[j]), bool(is_lc))
-        if entry_gap(v_full, *args) >= SEP_H:
+        ahead = []                                     # the rest of the lane, front first (decision 10-11-2026)
+        for along, m in sorted(alongs, reverse=True):
+            if m == j:
+                continue
+            hold_m = self.state[m] == HOLD
+            ahead.append((along, 0.0 if hold_m else float(traf.tas[m]),
+                          0.0 if hold_m else float(vcas2tas(traf.selspd[m], traf.alt[m])),
+                          self.state[m] != ENTRY, bool(self.is_lc[m])))
+        ahead = [a for a in ahead if a[0] > s_lead]    # only drones in front of the drone ahead
+        gap = lambda v: entry_gap(v, *args, ahead=ahead)
+        if gap(v_full) >= SEP_H:
             return v_full, ""
-        if entry_gap(0.0, *args) < SEP_H:              # no speed works: held in transit (decision 09-11-2026)
+        if gap(0.0) < SEP_H:              # no speed works: held in transit (decision 09-11-2026)
             return None, (f"{traf.id[j]} ({STATE_NAMES[self.state[j]]}) {s_lead:.0f} m ahead at {v_lead:.1f} m/s, "
                           f"commanded {v_cap:.1f} m/s")
         lo, hi = 0.0, v_full
         while hi - lo > 0.05:
             mid = 0.5 * (lo + hi)
-            if entry_gap(mid, *args) >= SEP_H:
+            if gap(mid) >= SEP_H:
                 lo = mid
             else:
                 hi = mid
