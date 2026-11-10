@@ -1,0 +1,19 @@
+# Kijken in de BlueSky-GUI (09-11-2026): precies run C1_shared_d060_s001 van c1c2_main
+# (C1 = FCFS op gedeelde bogen; 60 drones/h, seed 1, geen voorspellingsfout, inloop 20 min, daarna 60 min meten).
+# Starten (vanuit de map bluesky): python BlueSky.py, dan in de console: IC thesis/kijk_c1.scn
+# Tempo: DTMULT 10 (10x zo snel), DTMULT 1 (echte tijd), FF (zo snel mogelijk), HOLD (pauze), OP (verder).
+# Andere vraag of seed: pas de TRAFFIC-regel aan: TRAFFIC <vraag per uur> <seed> 0 BASE 1200 3600.
+# Logbestanden gaan naar bluesky/output/kijk_c1/ (niet naar Resultaten). Aan het eind zet TRAFFIC de simulatie op HOLD.
+00:00:00.00>DT 0.5
+00:00:00.00>PLUGINS LOAD ENERGY
+00:00:00.00>PLUGINS LOAD FLIGHTLOG
+00:00:00.00>PLUGINS LOAD VPMS
+00:00:00.00>PLUGINS LOAD TRAFFIC
+00:00:00.00>VPMS SHARED
+00:00:00.00>VPMS TARGET 40
+00:00:00.00>VPMS SHOW
+00:00:00.00>FLIGHTLOG kijk_c1
+00:00:00.00>PAN 52.0 4.0
+00:00:00.00>ZOOM 40
+00:00:00.00>TRAFFIC 60 1 0 BASE 1200 3600
+00:00:00.00>DTMULT 10
