@@ -117,9 +117,12 @@ class FlightLog(core.Entity):
         self.t_rotor += np.where(self.mode == 1, dt, 0.0)
         self.t_wing += np.where(self.mode == 2, dt, 0.0)
 
-        # Separation (flat earth, fine within a few km)
-        x = np.radians(traf.lon) * np.cos(np.radians(traf.lat)) * 6371e3
-        y = np.radians(traf.lat) * 6371e3
+        # Separation (flat earth around the mean position of the traffic, fine within a few km). Decision 12-11-2026:
+        # was each drone's own cos(lat) on the absolute longitude, which leaked 5.5 % of the north-south distance into
+        # the east-west distance at lon 4 (32 m measured as 31.1-32.9 m); now 0.1 % per km from the mean position.
+        lat0, lon0 = traf.lat.mean(), traf.lon.mean()
+        x = np.radians(traf.lon - lon0) * np.cos(np.radians(lat0)) * 6371e3
+        y = np.radians(traf.lat - lat0) * 6371e3
         dh = np.hypot(x[:, None] - x[None, :], y[:, None] - y[None, :])   # horizontal (m)
         dv = np.abs(traf.alt[:, None] - traf.alt[None, :])                 # vertical (m)
         np.fill_diagonal(dh, np.inf)

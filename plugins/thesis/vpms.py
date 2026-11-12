@@ -133,7 +133,7 @@ from vehicles import GENERIC_MC as MC, GENERIC_LC as LC   # noqa: E402
 # PARAMETERS (methodology 23-10-2026; placeholders marked "open")
 # =============================================================================
 VARIANT = "shared"            # "shared" (case C1) or "speed" (arcs per speed class)
-PAD_LAT, PAD_LON = 52.0, 4.0  # landing pad
+PAD_LAT, PAD_LON = 51.959385, 4.089905  # landing pad (decision 12-11-2026; was 52.0, 4.0)
 SEP_H, SEP_V = 32.0, 7.62     # m: separation minima (Metropolis II): the definition of a loss of separation, and the
                               #    distance in every rule that checks the real positions each update and that a
                               #    drone only passes through: hand-over, keeping the arc height and staying a
