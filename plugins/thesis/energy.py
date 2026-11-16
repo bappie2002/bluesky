@@ -42,6 +42,15 @@ P_TRANS_WING = E_TRANS_WING_J / T_TRANS_WING               # mean power during t
 #   rotor -> wing: starts when a Lift+Cruise below stall is told to fly at or above stall
 #                  (its target airspeed), so the block also covers the acceleration; 15 s.
 # A new transition replaces a block that is still running.
+# Decision 12-11-2026 (block 20): a block is charged in proportion to the change of speed it covers. A full
+# transition covers 0 to the wing speed V_ARC (LC.v_arc, 12.43 m/s) and costs the full block, exactly as
+# before (at the merge point, after a hold). A partial one costs less: per step the block energy is
+# E_full x (speed gained or lost this step within 0..V_ARC) / V_ARC, and the time in transition is that
+# fraction of the full duration (at most the step). Rotor -> wing: from the speed at which the drone is told
+# to go back up to V_ARC (an L+C at 5.7 m/s behind a multicopter pays 54 % of the block, in 8 s instead of
+# 15 s). Wing -> rotor: until the drone stops slowing down (an L+C that follows a multicopter at 9.0 m/s pays
+# 28 %); slowing down further later, on its rotors, is rotor flight. Before, every transition paid the full
+# block, also a partial one (comment of Baptiste on the methodology, 12-11-2026).
 # Decision 09-11-2026 (block 13): "told" is the airspeed VPMS asks for (Vpms.fly reports it with tell()),
 # before VPMS raises the target step by step at the L+C acceleration of 0.83 m/s2 (block 11). With that
 # ramp the target was only about 0.4 m/s above the airspeed, the two crossed stall almost together and
@@ -53,6 +62,7 @@ P_TRANS_WING = E_TRANS_WING_J / T_TRANS_WING               # mean power during t
 # block then. Off and on the wing then alternate: an L+C created on its wing lands with an odd number
 # of transitions (checked in test_vpms.py and analysis/delays.py).
 TO_ROTOR, TO_WING = 1, 2
+V_ARC = LC.v_arc      # m/s: speed range of a full transition, 0 to the wing speed (decision 12-11-2026)
 
 
 def init_plugin():
@@ -70,7 +80,9 @@ class Energy(core.Entity):
             self.soc_start = np.array([])            # state of charge at creation (or as set by SOC)
             self.used_wh = np.array([])              # energy used since creation (Wh)
             self.power = np.array([])                # power now (W), block power during a transition
-            self.trans_left = np.array([])           # seconds left of the current transition
+            self.trans_left = np.array([])           # share of the full block that is still open (0-1)
+            self.tas_prev = np.array([])             # airspeed at the previous step (m/s), for the speed change
+            self.v_top = np.array([])                # airspeed at which an L+C on its wing began to slow down (m/s)
             self.trans_kind = np.array([], dtype=int)  # 0 none, TO_ROTOR or TO_WING
             self.mode = np.array([], dtype=int)      # 0 hover, 1 rotor, 2 wing (see MODES)
             self.wh_hover = np.array([])             # energy used per mode (Wh)
@@ -88,6 +100,8 @@ class Energy(core.Entity):
         self.on_wing[-n:] = self.is_lc[-n:] & (traf.tas[-n:] >= LC.v_stall)
         self.v_told[-n:] = np.nan
         self.wing_started[-n:] = False
+        self.tas_prev[-n:] = traf.tas[-n:]
+        self.v_top[-n:] = traf.tas[-n:]
         self.soc[-n:] = 1.0
         self.soc_start[-n:] = 1.0
 
@@ -110,15 +124,35 @@ class Energy(core.Entity):
         self.wing_started = started | to_wing
         # both in one step (it dipped below stall and is already told to go back): two transitions, and the newer
         # one, rotor -> wing, runs (decision 09-11-2026; before, the rotor -> wing one was lost)
-        self.trans_left = np.where(to_wing, T_TRANS_WING, np.where(to_rotor, T_TRANS, self.trans_left))
+        self.trans_left = np.where(to_wing | to_rotor, 1.0, self.trans_left)
         self.trans_kind = np.where(to_wing, TO_WING, np.where(to_rotor, TO_ROTOR, self.trans_kind))
-        p_block = np.where(self.trans_kind == TO_WING, P_TRANS_WING, P_TRANS)
-        t_trans = np.minimum(dt, self.trans_left)                     # s of this step in transition
-        self.trans_left = np.maximum(self.trans_left - dt, 0.0)
+        # share of a full transition covered this step: the speed gained (to the wing) or lost (to the rotors)
+        # within 0..V_ARC, as a fraction of V_ARC (decision 12-11-2026)
+        tas = np.asarray(traf.tas, dtype=float)
+        gained = np.maximum(np.minimum(tas, V_ARC) - self.tas_prev, 0.0)
+        # to the rotors: counted from the speed at which it began to slow down on its wing, so that a full brake
+        # from V_ARC to hover pays the full block wherever the steps of this plugin fall
+        lost = np.maximum(np.minimum(np.where(to_rotor, np.maximum(self.v_top, self.tas_prev), self.tas_prev), V_ARC)
+                          - tas, 0.0)
+        share = np.where(self.trans_kind == TO_WING, gained, np.where(self.trans_kind == TO_ROTOR, lost, 0.0)) / V_ARC
+        share = np.minimum(share, self.trans_left)
+        t_full = np.where(self.trans_kind == TO_WING, T_TRANS_WING, T_TRANS)
+        e_full = np.where(self.trans_kind == TO_WING, E_TRANS_WING_J, E_TRANS_J)
+        t_trans = np.minimum(share * t_full, dt)                      # s of this step in transition
+        e_trans = e_full * share / 3600                               # Wh this step, in transition
+        self.trans_left -= share
+        # the block closes when it is used up, when the drone is on its wing at V_ARC (to the wing) or when it
+        # no longer slows down (to the rotors)
+        done = (self.trans_left <= 1e-9) | ((self.trans_kind == TO_WING) & (tas >= V_ARC - 1e-6)) | \
+               ((self.trans_kind == TO_ROTOR) & (lost <= 0.0) & ~to_rotor)
+        self.trans_kind = np.where(done, 0, self.trans_kind)
+        self.trans_left = np.where(done, 0.0, self.trans_left)
+        self.v_top = np.where(wing & (tas < self.tas_prev), self.v_top, tas)
+        self.tas_prev = tas.copy()
         self.on_wing = wing
 
         e_flight = self.power * (dt - t_trans) / 3600                 # Wh this step, outside transition
-        e_trans = p_block * t_trans / 3600                            # Wh this step, in transition
+        p_block = np.where(t_trans > 0, e_trans * 3600 / np.maximum(t_trans, 1e-9), 0.0)
         self.power = np.where(t_trans > 0, p_block, self.power)
 
         self.wh_hover += np.where(self.mode == 0, e_flight, 0.0)

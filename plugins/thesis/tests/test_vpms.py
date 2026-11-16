@@ -6,7 +6,11 @@ warmup_s and measure_s: default 300 and 600 s, a short test; 3600 3600 is a full
 Checks: every drone lands; merge and touchdown intervals; losses of separation (32 m / 7.62 m);
 L+C drones that had to leave their wing behind a multicopter; the descent on the direct leg (fastest rate,
 no faster than 2 m/s at low speed, exactly 40 m at the merge point) and the no-go zone (decision 05-11-2026);
-an odd number of transitions for every L+C created on its wing (decision 09-11-2026). """
+an odd number of transitions for every L+C created on its wing (decision 09-11-2026).
+Block 22 (decisions 13-11-2026): drones created within 32 m of another (expected 0); leaders that make room, per
+type, and their highest speed (MC at most 11.18, L+C at most 15.4 m/s); keep flying of the L+C (ring: started,
+joined the opposite arc, refused with the reasons); the arc check also on the ring. Extra argument: ON or OFF for
+the ring (default ON):  python plugins/thesis/tests/test_vpms.py shared 0 60 40 300 600 OFF """
 import os, sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, ROOT); os.chdir(ROOT)
@@ -19,9 +23,11 @@ demand = sys.argv[3] if len(sys.argv) > 3 else "60"
 target = sys.argv[4] if len(sys.argv) > 4 else "40"
 warmup = sys.argv[5] if len(sys.argv) > 5 else "300"
 measure = sys.argv[6] if len(sys.argv) > 6 else "600"
+ring = sys.argv[7] if len(sys.argv) > 7 else "ON"
 bs.init(mode="sim", detached=True)
 for cmd in ["DT 0.5", "PLUGINS LOAD ENERGY", "PLUGINS LOAD FLIGHTLOG", "PLUGINS LOAD VPMS",
-            "PLUGINS LOAD TRAFFIC", f"VPMS {variant}", f"VPMS TARGET {target}", f"FLIGHTLOG vpms_{variant}",
+            "PLUGINS LOAD TRAFFIC", f"VPMS {variant}", f"VPMS TARGET {target}", f"VPMS RING {ring}",
+            f"FLIGHTLOG vpms_{variant}",
             f"TRAFFIC {demand} 1 {eta} BASE {warmup} {measure}"]:
     bs.stack.stack(cmd)
 bs.sim.step()
@@ -41,10 +47,10 @@ braking_to_end = set()                 # L+C below stall because it brakes to th
 perf_seen = {}                         # BlueSky limits per type, as BlueSky uses them (decision 04-11-2026)
 prev_alt, vs_fast, vrs_steps, merge_dev, seen_final = {}, 0.0, 0, 0.0, set()   # descent checks (05-11-2026)
 print(f"Entry offset {V.entry_offset():.1f} m per side (speed variant; computed {V.entry_offset_min():.1f} m); "
-      f"lane gap {V.GAP_MIN:.0f} m; arcs at {V.H_ARC[0]:.2f} / {V.H_ARC[1]:.2f} m; hand-over MC-MC "
-      f"{V.handover_time(False, False):.1f} s, L+C-L+C {V.handover_time(True, True):.1f} s"
-      + (f", L+C behind MC {V.handover_time(False, True):.1f} s" if V.VARIANT == "shared" else
-         " (MC and L+C have their own entry points)"))
+      f"lane gap {V.GAP_MIN:.0f} m; arcs at {V.H_ARC[0]:.2f} / {V.H_ARC[1]:.2f} m; gate rule "
+      f"{V.SEP_H / V.V_ENTRY[0]:.2f} s behind an MC, {V.SEP_H / V.V_ENTRY[1]:.2f} s behind an L+C; fixed turn radius "
+      f"MC lane {V.turn_radius(False):.1f} m, L+C lane {V.turn_radius(True):.1f} m; ring {'on' if V.RING_ON else 'off'}")
+v_type_max = [0.0, 0.0]                # highest speed of a leader that makes room, per type (block 22)
 cleared_at = {}                        # acid -> time of its go (FCFS order check, decision 06-11-2026)
 prev_tas, acc_seen, dec_seen = {}, [0.0, 0.0], [0.0, 0.0]   # observed acceleration per type (09-11-2026)
 while bs.sim.simt < float(warmup) + float(measure) + 3000 and not sc.done:
@@ -88,7 +94,7 @@ while bs.sim.simt < float(warmup) + float(measure) + 3000 and not sc.done:
         los_pairs.add(pair)
     prog_all = {}
     for i in range(n):
-        if vp.state[i] in (V.ARC, V.HOLD):
+        if vp.state[i] in (V.ARC, V.HOLD, V.RING_ON):
             p_ = (np.degrees(np.arctan2(x[i], y[i])) - V.arc_start_bearing(vp.gate[i], vp.is_lc[i])) % 360
             prog_all[i] = 0.0 if p_ > 300 else p_
         try:
@@ -97,7 +103,7 @@ while bs.sim.simt < float(warmup) + float(measure) + 3000 and not sc.done:
         except (AttributeError, IndexError):
             pass
     for i in range(n):
-        if vp.state[i] == V.ARC:
+        if vp.state[i] in (V.ARC, V.RING_ON):
             err = np.hypot(x[i], y[i]) - V.arc_radius(vp.is_lc[i])        # + outside, - inside
             prog = (np.degrees(np.arctan2(x[i], y[i])) - V.arc_start_bearing(vp.gate[i], vp.is_lc[i])) % 360
             prog = 0.0 if prog > 300 else prog
@@ -105,7 +111,7 @@ while bs.sim.simt < float(warmup) + float(measure) + 3000 and not sc.done:
                 overshoot = min(overshoot, err)                        # inside the circle: overshoot
             if prog > 20.0:
                 max_radial = max(max_radial, abs(err))                 # once on the arc
-            if vp.is_lc[i] and bs.traf.tas[i] < 11.8:
+            if vp.is_lc[i] and bs.traf.tas[i] < 11.8 and vp.state[i] == V.ARC:
                 key = V.arc_key(vp.gate[i], vp.is_lc[i])
                 ahead = any(j != i and V.arc_key(vp.gate[j], vp.is_lc[j]) == key and prog_all[j] > prog_all[i]
                             for j in prog_all)
@@ -113,6 +119,7 @@ while bs.sim.simt < float(warmup) + float(measure) + 3000 and not sc.done:
         if vp.speedup[i]:
             sped_up.add(bs.traf.id[i])
             v_max_seen = max(v_max_seen, float(bs.traf.tas[i]))
+            v_type_max[int(vp.is_lc[i])] = max(v_type_max[int(vp.is_lc[i])], float(bs.traf.tas[i]))
 
 
 merge = np.diff([t for t, _ in vp.merges]); touch = np.diff([t for t, _ in vp.touchdowns])
@@ -127,10 +134,9 @@ print(f"Losses of separation (32 m and 7.62 m): {len(los_pairs)} pairs {sorted(l
 print(f"Observed acceleration: MC up to {acc_seen[0]:.2f}, braking {dec_seen[0]:.2f} m/s2; L+C up to {acc_seen[1]:.2f}, "
       f"braking {dec_seen[1]:.2f} m/s2 (at most MC {V.A_ACC[0]:.2f} / {V.A_DECEL[0]:.2f}, L+C {V.A_ACC[1]:.2f} / "
       f"{V.A_DECEL[1]:.2f}; decision 09-11-2026)")
-print(f"Slow entries (created slower than the entry speed, safety net of 06-11-2026): {len(vp.slow_entries)} "
-      f"(expected 0 below capacity; entry leg {V.GATE_MARGIN:g} m)")
-for t_se, acid_se, v_se, note_se in vp.slow_entries[:6]:
-    print(f"   t={t_se:.0f} {acid_se}: {note_se}")
+print(f"Drones created within {V.SEP_H:.0f} m of another (block 22, no safety net): {len(vp.close_entries)} (expected 0)")
+for t_ce, acid_ce, other_ce, d_ce in vp.close_entries[:6]:
+    print(f"   t={t_ce:.0f} {acid_ce}: {other_ce} at {d_ce:.1f} m")
 print(f"L+C below stall on an arc (behind a slower or holding drone): {len(trans_on_arc)} {sorted(trans_on_arc)[:6]}")
 print(f"L+C below stall while braking to the end of its own arc (no drone ahead): {len(braking_to_end)}")
 print(f"Direct leg: fastest descent {vs_fast:.2f} m/s (at most {V.VS_FAST:.0f}); faster than {V.VS_DIRECT_MAX:.0f} m/s "
@@ -141,8 +147,25 @@ print(f"FCFS: {len(order)} clearances, {out_of_order} out of gate order (expecte
 nd = [d for _, d in vp.nogo_delays]
 print(f"No-go zone: {len(nd)} clearances delayed" + (f", longest {max(nd):.1f} s, mean {np.mean(nd):.1f} s" if nd else "")
       + f"; holds without a conflict-free descent: {len(vp.nogo_hold)} (expected 0)")
-print(f"L+C leaders that sped up to restore {V.GAP_MIN:.0f} m: {len(sped_up)} {sorted(sped_up)[:6]}; fastest {v_max_seen:.1f} m/s "
-      f"(at most {V.V_LC_MAX} m/s)")
+n_mc = sum(1 for _, _, typ, _ in vp.speedups if typ == "MC")
+n_ann = sum(1 for _, _, _, info in vp.speedups if "announced" in info)
+print(f"Leaders that made room for an L+C (P-17): {len(sped_up)} drones, {len(vp.speedups)} times ({n_mc} by an MC, "
+      f"{n_ann} for an announced L+C); fastest MC {v_type_max[0]:.2f} m/s (at most {V.V_MC_MAX:.2f}), "
+      f"L+C {v_type_max[1]:.2f} m/s (at most {V.V_LC_MAX})")
+rl = vp.ring_log
+n_ring = len({a for _, a, e, _ in rl if e == "ring"})
+n_join = sum(1 for _, _, e, _ in rl if e == "ring_join")
+refused = [info for _, _, e, info in rl if e == "ring_refused"]
+print(f"Keep flying (ring, P-18, {'on' if V.RING_ON else 'off'}): {n_ring} L+C flew on, {n_join} times onto the opposite arc; "
+      f"refused {len(refused)} times")
+kinds = {}
+for info in refused:
+    k = ("drone ahead holds" if "ahead holds" in info else "multicopter in the lane" if "multicopter" in info and "lane" in info
+         else "multicopter announced or on its entry line" if "multicopter" in info else "holds in the opposite lane"
+         if "holds in the lane" in info else "already braking" if "braking" in info else "L+C at the junction")
+    kinds[k] = kinds.get(k, 0) + 1
+for k, c in sorted(kinds.items(), key=lambda kv: -kv[1]):
+    print(f"   refused: {k}: {c}")
 
 for typ, (vmax, vsmin, vsmax, axmax, hmax) in sorted(perf_seen.items()):
     print(f"BlueSky limits {typ}: speed max {vmax:.1f} m/s, vertical {vsmin:.1f} to {vsmax:.1f} m/s, "
@@ -161,7 +184,7 @@ for cfg in ("MC", "LC"):
 # L+C created on its wing lands with an odd number (1, 3, 5, ...); an even number means a transition was missed
 # or counted twice (block 11 missed every rotor -> wing transition)
 v_stall = mods["energy"].LC.v_stall
-below = {a for _, a, v, _ in vp.slow_entries if v < v_stall}          # created below stall: not on its wing
+below = set()                                                          # since block 22 every drone is created at its entry speed
 lc_rows = [x for x in rows if x["config"] == "LC"]
 n_tr = {}
 for x in lc_rows:

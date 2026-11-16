@@ -39,6 +39,16 @@ show("After 120 s")
 bs.stack.stack("LC1 SPD 30")      # Lift+Cruise speeds up again and goes back on its wing
 run(60)
 show("After 180 s")
+wh_trans_180 = float(plugin.wh_trans[1])
+n_trans_180 = int(plugin.n_trans[1])
+bs.stack.stack("LC1 SPD 11")      # partial (decision 12-11-2026): off its wing to about 5.7 m/s only ...
+run(60)
+show("After 240 s")
+v_low = float(bs.traf.tas[1])
+wh_trans_240 = float(plugin.wh_trans[1])
+bs.stack.stack("LC1 SPD 30")      # ... and back on its wing
+run(60)
+show("After 300 s")
 print("\nExpected:")
 print(f"  MC1 hover power {energy.MC.p_hover:.1f} W; after 120 s {energy.MC.p_hover * 120 / 3600:.2f} Wh, all in 'hover'")
 v_lc = float(bs.traf.tas[1])
@@ -46,5 +56,11 @@ print(f"  LC1 hover power {energy.LC.p_hover:.1f} W; wing power at {v_lc:.1f} m/
 print(f"  LC1 after 120 s: one transition (wing -> rotor) {energy.E_TRANS_J / 3600:.2f} Wh in 'trans'")
 print(f"  LC1 after 180 s: plus rotor -> wing {energy.E_TRANS_WING_J / 3600:.2f} Wh, "
       f"total {(energy.E_TRANS_J + energy.E_TRANS_WING_J) / 3600:.2f} Wh in 'trans', n_trans 2: "
+      f"{n_trans_180}")
+share = (energy.V_ARC - v_low) / energy.V_ARC
+print(f"  LC1 after 240 s: partial transition to the rotors, down to {v_low:.2f} m/s: share {share:.3f} of the block, "
+      f"{share * energy.E_TRANS_J / 3600:.2f} Wh: {wh_trans_240 - wh_trans_180:.2f}")
+print(f"  LC1 after 300 s: partial transition back to the wing, same share: "
+      f"{share * energy.E_TRANS_WING_J / 3600:.2f} Wh: {float(plugin.wh_trans[1]) - wh_trans_240:.2f}; n_trans 4: "
       f"{int(plugin.n_trans[1])}")
 print("  used = hover + rotor + wing + trans for both")

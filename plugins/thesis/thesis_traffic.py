@@ -1,5 +1,21 @@
 """ TRAFFIC: the traffic and the disturbances of one experimental run (decisions 26-10-2026).
 
+Block 22 (decisions 13-11-2026; replaces the text on the hand-over rule and the safety net below):
+  - Arrivals per gate (ST-18): each gate gets a quarter of the demand. The gaps at one gate are a shifted
+    exponential: at least SEP_H / V_ENTRY of the previous drone at that gate (32 m behind it when the next one
+    passes the gate: 3.5 s behind an MC at 9.03 m/s, 2.6 s behind an L+C at 12.43 m/s), plus an exponential part
+    with the rest of the mean gap, so the mean rate stays demand / 4 per gate. The minimum is a property of a
+    separated transit flow, not a delay: no drone is moved later and nobody waits before the gate. The draws do
+    not depend on the arc variant, so every case gets exactly the same drones (common random numbers).
+  - No safety net (ST-19): a drone is created at its entry speed, at the first update after its drawn time,
+    placed where it is at that update (V_ENTRY x the time since it passed its gate), so it passed the gate at
+    exactly its drawn time; VPMS gets that time (t_gate). A drone created within SEP_H of another drone is
+    counted (VPMS close_entries, event entry_close; expected 0).
+  - Announcement (ST-20): the list of arrival times goes to VPMS (set_schedule), which may look 16 s ahead.
+  - Video mode (TRAFFIC VIDEO ON/OFF): announced drones are shown as ghost drones (call sign AN####, the same
+    type) flying straight to their gate, deleted when the real drone is created. VPMS ignores them; only for
+    watching a run in the GUI, never in the batch runs (they would enter the flight log).
+
 Traffic (methodology, Traffic and Scenarios):
   - arrival times: Poisson process, exponential gaps with mean 3600 / demand
     (Zeng et al. 2021, Kleinbekman et al. 2020)
@@ -83,7 +99,39 @@ def plugin(name, cls):
     return None
 
 
-def draw(demand, seed, duration, pad="BASE", eta_pct=0.0, entry_key=None, handover=None):
+def draw(demand, seed, duration, pad="BASE", eta_pct=0.0, v_entry=None, sep=32.0, n_gates=4):
+    """All arrivals of one run (block 22, decision 13-11-2026). Per gate a shifted exponential: the gap behind a
+    drone is at least sep / v_entry[type of that drone] (the transit minimum at the gate), plus an exponential part
+    with mean (mean gap - that minimum), so each gate keeps the mean rate demand / n_gates. Own random streams per
+    quantity and per gate; soc, pad time and prediction error in the order of arrival (common random numbers: the
+    drones depend only on demand and seed)."""
+    v_entry = (MC.v_range, LC.v_arc) if v_entry is None else v_entry
+    mean_gap = 3600.0 / demand * n_gates
+    t_all, g_all, lc_all = [], [], []
+    for g in range(n_gates):
+        r_time, r_type = np.random.default_rng([seed, 0, g]), np.random.default_rng([seed, 2, g])
+        t, prev = r_time.exponential(mean_gap), None
+        while t < duration:
+            lc = bool(r_type.random() < SHARE_LC)
+            t_all.append(t); g_all.append(g); lc_all.append(lc)
+            h = sep / v_entry[int(lc)]
+            t += h + r_time.exponential(mean_gap - h)
+    order = np.argsort(np.array(t_all), kind="stable")
+    times = np.array(t_all)[order]
+    n = len(times)
+    rng = {k: np.random.default_rng([seed, m]) for m, k in enumerate(["time", "gate", "type", "soc", "pad", "eta"])}
+    plan = dict(
+        time=times,
+        gate=np.array(g_all, dtype=int)[order],
+        is_lc=np.array(lc_all, dtype=bool)[order],
+        soc=rng["soc"].uniform(*SOC_RANGE, size=n),
+        t_pad=np.full(n, T_PAD_LONG if pad.upper() == "LONG" else T_PAD_BASE),
+        eta_err=np.clip(rng["eta"].standard_normal(n), -3, 3) * eta_pct / 100,
+    )
+    return plan
+
+
+def draw_old(demand, seed, duration, pad="BASE", eta_pct=0.0, entry_key=None, handover=None):
     """All arrivals of one run. Separate random streams per quantity (common random numbers).
     Hand-over rule (decision 03-11-2026): entry_key(gate, is_lc) gives the entry point of a drone,
     handover(lead_lc, foll_lc) the smallest time (s) behind the previous drone at that point; a drone
@@ -129,7 +177,7 @@ class Traffic(core.Entity):
 
     def clear(self):
         self.plan, self.next, self.waiting, self.measured, self.done = None, 0, [], set(), False
-        self.held = {}                            # k -> time from which the safety net held the drone in transit
+        self.video, self.ghosts = False, {}       # video mode (block 22): k -> ghost call sign
         self.t0, self.warmup, self.measure = 0.0, WARMUP, MEASURE
 
     def reset(self):
@@ -146,27 +194,50 @@ class Traffic(core.Entity):
             self.waiting.append(self.next)
             self.next += 1
         for k in list(self.waiting):             # in order of arrival, at the drawn time (option B)
-            if self.spawn(k, vpms):              # False: held in transit by the safety net (decision 09-11-2026)
-                self.waiting.remove(k)
+            self.spawn(k, vpms)
+            self.waiting.remove(k)
+        if self.video:
+            self.show_ghosts(vpms, now)
         self.check_end()
+
+    def show_ghosts(self, vpms, now):
+        """Video mode (block 22): every announced drone as a ghost drone on the extension of its entry line, where
+        it would be if it flew at its entry speed; VPMS does not manage it. Only for the GUI."""
+        geo = sys.modules[type(vpms).__module__]
+        p = self.plan
+        for k in range(self.next, len(p["time"])):
+            dt = p["time"][k] - now
+            if dt > geo.H_ANNOUNCE:
+                break
+            g, lc = int(p["gate"][k]), bool(p["is_lc"][k])
+            v = geo.V_ENTRY[int(lc)]
+            lat, lon = geo.to_latlon(*geo.offset_xy(g, lc, geo.gate_distance() + v * max(dt, 0.0)))
+            hdg = (geo.GATE_BEARINGS[g] + 180) % 360
+            acid = self.ghosts.get(k)
+            if acid is None:
+                acid = self.ghosts[k] = f"AN{k + 1:04d}"
+                traf.cre(acid, TYPE[lc], lat, lon, hdg, geo.H_ARC[g % 2], vtas2cas(v, geo.H_ARC[g % 2]))
+            else:
+                i = traf.id2idx(acid)
+                if i >= 0:
+                    traf.lat[i], traf.lon[i] = lat, lon
 
     def spawn(self, k, vpms):
         p = self.plan
         g, lc = int(p["gate"][k]), bool(p["is_lc"][k])
         acid = f"{'LC' if lc else 'MC'}{k + 1:04d}"
         geo = sys.modules[type(vpms).__module__]              # the VPMS module: geometry
-        lat, lon, alt, hdg = geo.gate(g, lc)                  # entry point of this gate and type
-        v0, slow = vpms.entry_speed(g, lc)                    # V_ENTRY; lower only as the safety net (06-11-2026)
-        if v0 is None:                                        # no speed works: hold it in transit (09-11-2026)
-            self.held.setdefault(k, sim.simt)
-            return False
-        if k in self.held:
-            slow = (f"held {sim.simt - self.held.pop(k):.1f} s in transit, then {v0:.1f} m/s"
-                    + (f" ({slow})" if slow else ""))
-        vpms.register(acid, g, lc, sim.simt, float(p["t_pad"][k]), float(p["eta_err"][k]))
+        _, _, alt, hdg = geo.gate(g, lc)                      # entry point of this gate and type
+        v0 = geo.V_ENTRY[int(lc)]                             # always the entry speed (no safety net, block 22)
+        t_gate = self.t0 + p["time"][k]                       # it passed its gate at exactly its drawn time:
+        lat, lon = geo.to_latlon(*geo.offset_xy(g, lc, geo.gate_distance() - v0 * max(sim.simt - t_gate, 0.0)))
+        ghost = self.ghosts.pop(k, None)
+        if ghost is not None:
+            stack.stack(f"DEL {ghost}")
+        vpms.register(acid, g, lc, sim.simt, float(p["t_pad"][k]), float(p["eta_err"][k]), t_gate)
         traf.cre(acid, TYPE[lc], lat, lon, hdg, alt, vtas2cas(v0, alt))
-        wait = sim.simt - (self.t0 + p["time"][k])
-        soc = p["soc"][k] - P_WAIT[lc] * wait / 3600 / E_BAT[lc]
+        wait = 0.0                                            # nobody waits before the gate (block 22)
+        soc = p["soc"][k]
         energy = plugin("energy", "Energy")
         i = traf.id2idx(acid)
         if energy is not None and i >= 0:
@@ -177,10 +248,17 @@ class Traffic(core.Entity):
         if fl is not None and fl.files and i >= 0:
             fl.event(i, "measured" if acid in self.measured else "runin",
                      f"arrival {p['time'][k]:.1f} s, waited {wait:.1f} s at gate")
-        if slow:                                              # safety net used: counted (decision 06-11-2026)
-            vpms.slow_entries.append((sim.simt, acid, v0, slow))
-            if fl is not None and fl.files and i >= 0:
-                fl.event(i, "slow_entry", slow)
+        if i >= 0:                                            # within SEP_H of another drone? (block 22, expected 0)
+            x, y = geo.to_xy(traf.lat, traf.lon)
+            dh = np.hypot(x - x[i], y - y[i])
+            dv = np.abs(traf.alt - traf.alt[i])
+            near = [j for j in np.flatnonzero((dh < geo.SEP_H) & (dv < geo.SEP_V))
+                    if j != i and not traf.id[j].startswith("AN")]
+            if near:
+                j = min(near, key=lambda m: dh[m])
+                vpms.close_entries.append((sim.simt, acid, traf.id[j], float(dh[j])))
+                if fl is not None and fl.files:
+                    fl.event(i, "entry_close", f"{traf.id[j]} at {dh[j]:.1f} m")
         return True
 
     def check_end(self):
@@ -197,18 +275,25 @@ class Traffic(core.Entity):
         """TRAFFIC demand seed [eta_err_pct] [BASE|LONG] [warmup_s] [measure_s], or TRAFFIC BATCH [SEP]"""
         if demand.upper() == "BATCH":
             return write_batch(separation=(str(seed).upper() == "SEP"))
+        if demand.upper() == "VIDEO":
+            self.video = str(seed).upper() not in ("OFF", "0")
+            return True, f"TRAFFIC video mode {'on: announced drones shown as ghosts AN####' if self.video else 'off'}"
         demand = float(demand)
         self.warmup, self.measure = warmup, measure
         vpms = plugin("vpms", "Vpms")
         geo = sys.modules[type(vpms).__module__] if vpms is not None else None
-        self.plan = draw(demand, int(seed), warmup + measure, pad, eta,
-                         geo.entry_key if geo else None, geo.handover_time if geo else None)
+        v_entry = geo.V_ENTRY if geo else None
+        sep = geo.SEP_H if geo else 32.0
+        self.plan = draw(demand, int(seed), warmup + measure, pad, eta, v_entry, sep)
         self.t0, self.next, self.waiting, self.measured, self.done = sim.simt, 0, [], set(), False
+        p = self.plan
+        if vpms is not None:                            # the list of arrivals for VPMS (block 22)
+            vpms.set_schedule(self.t0 + p["time"], p["gate"], p["is_lc"],
+                              [f"{'LC' if lc else 'MC'}{k + 1:04d}" for k, lc in enumerate(p["is_lc"])])
         stack.stack("OP")
         n, n_lc = len(self.plan["time"]), int(self.plan["is_lc"].sum())
-        rule = (f"hand-over MC-MC {geo.handover_time(False, False):.1f} s, L+C-L+C {geo.handover_time(True, True):.1f} s"
-                + (f", L+C behind MC {geo.handover_time(False, True):.1f} s" if geo.VARIANT == "shared" else "")
-                if geo else "no hand-over rule")
+        rule = (f"gate rule {geo.SEP_H / geo.V_ENTRY[0]:.2f} s behind an MC, {geo.SEP_H / geo.V_ENTRY[1]:.2f} s behind "
+                f"an L+C; ring {'on' if geo.RING_ON else 'off'}; announcement {geo.H_ANNOUNCE:g} s" if geo else "no gate rule")
         fl = plugin("flightlog", "FlightLog")
         if fl is not None and geo is not None:          # settings of this run for the analysis (06-11-2026)
             fl.run_info(variant=geo.VARIANT, target=geo.T_TARGET, design=geo.T_DESIGN, k_spacing=geo.K_SPACING,
@@ -217,7 +302,10 @@ class Traffic(core.Entity):
                         offset=float(geo.entry_offset()) if geo.VARIANT == "speed" else 0.0,
                         demand=demand, seed=int(seed), eta_pct=float(eta), pad=pad.upper(),
                         warmup=float(warmup), measure=float(measure), arrivals=n, arrivals_lc=n_lc,
-                        t0=float(sim.simt))   # simulation time of the start: measured hour = t0 + warmup ...
+                        t0=float(sim.simt),   # simulation time of the start: measured hour = t0 + warmup ...
+                        ring=bool(geo.RING_ON), horizon=float(geo.H_ANNOUNCE), v_mc_max=float(geo.V_MC_MAX),
+                        turn_mc=float(geo.turn_lookahead(False)), turn_lc=float(geo.turn_lookahead(True)),
+                        gate_rule="per gate SEP_H / V_ENTRY of the previous drone (block 22)")
         return True, (f"TRAFFIC: {n} arrivals ({n_lc} L+C) in {warmup + measure:.0f} s, "
                       f"seed {seed}, prediction error {eta} %, pad {pad}, {rule}")
 

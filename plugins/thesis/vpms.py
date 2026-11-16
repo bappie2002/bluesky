@@ -1,5 +1,37 @@
 """ VPMS: the vertiport point-merge structure of Chang et al. (2026), scaled to cargo drones.
 
+Block 22 (decisions 13-11-2026, "everything is solved in the structure"; this replaces older text below where
+it says otherwise):
+  - Gate: the transit airspace only owes SEP_H at the gate. TRAFFIC draws the arrivals per gate at least
+    SEP_H / V_ENTRY of the previous drone at that gate apart (3.5 s behind an MC, 2.6 s behind an L+C) and places
+    each drone where it is at its exact drawn time. No hand-over margin and no safety net any more
+    (handover_time, entry_gap and entry_speed are kept only for the design checks of 03-10 November); a drone
+    created within SEP_H of another is counted (close_entries, event entry_close; expected 0).
+  - Announcement: TRAFFIC gives VPMS the list of arrival times (set_schedule); VPMS may look H_ANNOUNCE (16 s)
+    ahead in it (announced). No transit drones are simulated.
+  - Making room (P-17): every leader with an L+C behind it closer than GAP_MIN, or with an announced L+C that
+    would arrive closer than GAP_MIN, speeds up: an MC to V_MC_MAX (11.18 m/s, v_r x 15.4 / 12.43), an L+C to
+    V_LC_MAX (15.4 m/s), on its entry leg too (rule P-14 is gone), and the drone ahead of it too while within
+    reach (a chain). An L+C behind an L+C that speeds up does not fall back; behind a multicopter that speeds up
+    it follows the normal lane rule, so it closes in slowly and falls back only about 60 m behind it (braking is
+    the last resort). A multicopter follower still falls back itself (cheap for an MC).
+  - Fixed turn (P-16): every drone turns from its entry leg onto its arc along the same circle of fixed radius
+    (turn_geom), 1.25 x the turn radius at the highest speed of the lane with BANK (MC lanes 34.2 m at 11.18 m/s,
+    L+C and shared lanes 64.8 m at 15.4 m/s), tangent to the entry leg and to the arc, like an RF leg in procedure
+    design.
+    It starts at T1 on the entry leg and ends at T2 on the arc; a slower drone banks less. So a drone that speeds
+    up does not overshoot, and the turn is a known flow for the descent plan. Design check 16-11-2026: a fixed
+    look-ahead of 2 turn radii (the first version) made fast drones cut the corner up to 115 m away from the
+    modelled entry leg and arc, and a multicopter on its turn came within 23 m of a descending L+C.
+  - Keep flying (P-18, idea of Andrei Badea, switch VPMS RING ON/OFF): an L+C that is not cleared when it would
+    start braking for the end of its arc flies on, clockwise on the same circle, to the arc of the gate opposite
+    (same height), instead of hovering, if ring_check allows it: no multicopter in that lane, no drone holding
+    there, and nobody (on its entry leg, on that arc or announced) at the junction or, in the speed variant,
+    on the MC entry line it crosses within GAP_MIN. Otherwise it brakes and hovers as before. State RING in the
+    30 deg gap, then it joins the opposite lane as a drone on its arc (event ring_join) and decides again at
+    the end of that arc. Every point of the circle is equally far from the merge point, so its clearance stays
+    valid. The multicopter always hovers (R = 1.09: little to gain; an MC ahead of an L+C is the risk case).
+
 Geometry (methodology, Airspace Structure and Separation; decisions 22, 23 and 26-10-2026):
   - landing pad at PAD_LAT, PAD_LON; merge point 40 m straight above it
   - four gates on the bearings 0, 90, 180 and 270 deg, each at the height of its own arc
@@ -187,6 +219,20 @@ V_LC_MAX = 15.4               # m/s: an L+C leader speeds up to at most this to 
                               #    speed of Metropolis II, so that all speeds lie within the conditions of its
                               #    separation minima (was 16.7 m/s, the calibration point of the wing model).
                               #    Also v_max of GLC in BlueSky
+V_MC_MAX = MC.v_range * V_LC_MAX / LC.v_arc   # m/s: highest speed of a multicopter that makes room for an L+C behind
+                              #    it (decision 13-11-2026, block 22): the same margin as the L+C, 15.4 / 12.43 = +24%,
+                              #    on its range speed: 11.18 m/s (11.15 with rounded speeds). Below v_max of GMC (17)
+V_MAX = (V_MC_MAX, V_LC_MAX)  # highest speed per type when making room (P-17)
+H_ANNOUNCE = 16.0             # s: how far ahead VPMS may look in the list of arrivals (decision 13-11-2026): set by
+                              #    keep-flying, t_decide 5.5 + gap 16.0 + GAP_MIN / V_ARC 3.9 - fastest L+C over the
+                              #    entry leg 10.1 = 15.3 s, rounded up; making room needs at most 3.6 s
+TURN_MARGIN = 1.25            # the fixed turn (P-16) is 1.25 x the turn radius at the highest speed and BANK, so a drone
+                              #    at that speed needs 20.5 deg of bank and keeps 4.5 deg to steer back onto the circle
+                              #    (turnprobe 16-11-2026: with 1.0 a drone at its highest speed could not hold the circle)
+RING_ON = True                # keep flying instead of hovering for the L+C (P-18; VPMS RING ON / OFF)
+T_RING_MARGIN = 1.5           # s added to the time windows of ring_check: a drone joining from its entry leg cuts the
+                              #    corner onto the circle (the fixed look-ahead), so it reaches the circle up to about
+                              #    this much earlier than its time to the arc start
 # Decision 09-11-2026: acceleration and braking per type, (MC, L+C). Before: 0.93 m/s2 for both,
 # 12.4^2 / (2 x 83 m), a misreading of Mathur & Atkins (2025, Table 9): 83 m is the distance flown during their
 # back-transition of 10 s, not a stopping distance at a constant deceleration from 12.4 m/s.
@@ -221,9 +267,10 @@ V_GROUND = 4.0                # m/s: below this airspeed on an arc, steer on gro
 BANK = 25.0                   # deg: bank angle of the drones in BlueSky (bankdef)
 DT = 0.5                      # s: update interval
 
-ENTRY, ARC, HOLD, DIRECT, FINAL, PAD = 1, 2, 3, 4, 5, 6
+ENTRY, ARC, HOLD, DIRECT, FINAL, PAD, RING = 1, 2, 3, 4, 5, 6, 7
 STATE_NAMES = {0: "-", ENTRY: "entry", ARC: "arc", HOLD: "hold", DIRECT: "direct",
-               FINAL: "final", PAD: "pad"}
+               FINAL: "final", PAD: "pad", RING: "ring"}
+WAITING = (ENTRY, ARC, HOLD, RING)           # not cleared yet
 M_PER_DEG = np.radians(1.0) * aero.Rearth   # m per degree, from BlueSky's own earth radius (6371 km), so that
                                             # VPMS metres are the metres BlueSky moves the drones by (decision
                                             # 05-11-2026; was 111320, 0.11 % more, which made a drone on its
@@ -280,7 +327,7 @@ def single_entry_time():
     the line:  A. it turns onto its arc (look_ahead before the arc start);  B. it is cleared at once and
     flies direct along the same line until it is SEP_V lower (clear_distance()). B binds: about 10.9 s with the entry leg of 150 m (06-11-2026; 9.4 s with 100 m, 9.7 s with the descent before 05-11-2026)."""
     v_mc, v_lc = V_ENTRY[0], V_ENTRY[1]
-    s_a = max(GATE_MARGIN - look_ahead(v_lc) - v_lc * DT, 0.0)           # m from the gate
+    s_a = max(GATE_MARGIN - turn_lookahead(True) - v_lc * DT, 0.0)       # m from the gate
     s_b = gate_distance() - clear_distance()
     return max((SEP_H + s) / v_mc - s / v_lc for s in (s_a, s_b))
 
@@ -348,7 +395,7 @@ def handover_gap(h, lead_lc, foll_lc, dt_m=0.01):
     the leader flew DT earlier and reacts one update (DT) after it appears; the leader slows down at once.
     Along the lane, not the straight line: on the entry leg the two are the same, and the smallest gap lies
     there or just after the leader's turn, where the difference is small (checked with restoreprobe)."""
-    turn = [gate_distance() - arc_start_along(lc) - look_ahead(V_ENTRY[lc]) - V_ENTRY[lc] * DT for lc in (0, 1)]
+    turn = [gate_distance() - arc_start_along(lc) - turn_lookahead(lc) - V_ENTRY[lc] * DT for lc in (0, 1)]
     n = int((h + 60.0) / dt_m) + 1
     dec, acc = [a * dt_m for a in A_DECEL], [a * dt_m for a in A_ACC]   # per type (decision 09-11-2026)
     lead, foll = int(lead_lc), int(foll_lc)
@@ -411,7 +458,7 @@ def entry_gap(v0, s_lead, v_lead, v_cap, lead_on_arc, lead_lc, foll_lc, horizon=
     behind a multicopter on a shared arc slowed further, and the L+C created behind it came to 31.5-31.9 m."""
     leg = gate_distance() - arc_start_along(foll_lc)              # entry leg (m): one lane, one arc
     end = leg + arc_radius(foll_lc) * np.radians(ARC_DEG)         # end of the arc, along the lane
-    turn = [gate_distance() - arc_start_along(lc) - look_ahead(V_ENTRY[lc]) - V_ENTRY[lc] * DT for lc in (0, 1)]
+    turn = [gate_distance() - arc_start_along(lc) - turn_lookahead(lc) - V_ENTRY[lc] * DT for lc in (0, 1)]
     lead, foll = int(lead_lc), int(foll_lc)
     n, kd = int(horizon / dt_m) + 1, int(round(DT / dt_m))
     dec, acc = [a * dt_m for a in A_DECEL], [a * dt_m for a in A_ACC]   # per type (decision 09-11-2026)
@@ -469,6 +516,49 @@ def look_ahead(gs):
     """Look-ahead distance (m) for following the arc: twice the turn radius at this ground speed,
     so a drone starts its turn onto the arc in time and does not overshoot it."""
     return max(L_MIN, 2 * gs ** 2 / (9.81 * np.tan(np.radians(BANK))))
+
+
+def turn_radius(is_lc):
+    """Radius (m) of the fixed turn onto the arc of a lane (block 22, P-16): TURN_MARGIN x the turn radius at BANK of
+    the highest speed a drone of that lane can fly (V_MAX): MC lanes 34.2 m, L+C lanes 64.8 m; shared lanes: set by
+    the L+C, as the arc radius."""
+    v = V_MAX[1] if (VARIANT == "shared" or is_lc) else V_MAX[0]
+    return TURN_MARGIN * v ** 2 / (9.81 * np.tan(np.radians(BANK)))
+
+
+_TURN = {}  # turn_geom per geometry
+
+
+def turn_geom(g, is_lc):
+    """The fixed turn of a lane (block 22, P-16): a circle of radius turn_radius tangent to the entry leg (at T1)
+    and, from outside, to the arc (at T2). The drone flies the leg to T1, the turn circle to T2 and then the arc.
+    Returns dict(C=(x, y) centre, R radius, T1, T2 (x, y), p2 = progress (deg) of T2 along the arc, b1 = bearing of
+    T1 seen from C, sweep = angle (deg) turned, sense = -ARC_DIR: the sign of the change of the bearing around C)."""
+    key = (VARIANT, T_DESIGN, ENTRY_OFFSET, GATE_MARGIN, K_SPACING, int(g), bool(is_lc))
+    if key not in _TURN:
+        r, sd, rt = arc_radius(is_lc), lateral(is_lc), turn_radius(is_lc)
+        b = np.radians(GATE_BEARINGS[g])
+        u, w = np.array([np.sin(b), np.cos(b)]), np.array([np.cos(b), -np.sin(b)])   # radial out; clockwise side
+        side = sd + ARC_DIR * rt
+        along = np.sqrt((r + rt) ** 2 - side ** 2)
+        c = along * u + side * w
+        t1 = along * u + sd * w
+        t2 = c * r / (r + rt)
+        p2 = ((np.degrees(np.arctan2(t2[0], t2[1])) - arc_start_bearing(g, is_lc)) * ARC_DIR) % 360
+        b1 = np.degrees(np.arctan2(t1[0] - c[0], t1[1] - c[1]))
+        b2 = np.degrees(np.arctan2(t2[0] - c[0], t2[1] - c[1]))
+        sense = -ARC_DIR
+        sweep = ((b2 - b1) * sense) % 360
+        _TURN[key] = dict(C=(float(c[0]), float(c[1])), R=float(rt), T1=(float(t1[0]), float(t1[1])),
+                          T2=(float(t2[0]), float(t2[1])), p2=float(p2), b1=float(b1), sweep=float(sweep),
+                          sense=sense, along1=float(along))
+    return _TURN[key]
+
+
+def turn_lookahead(is_lc):
+    """Where the fixed turn starts (m before the arc start, along the entry leg; block 22): for the reports and the
+    older design-check functions (handover_gap, entry_gap, single_entry_time). MC lanes about 30 m, L+C lanes 50 m."""
+    return float(turn_geom(0, is_lc)["along1"] - arc_start_along(is_lc))
 
 
 def time_to_merge(dist, v, lc):
@@ -542,27 +632,40 @@ _FLOWS = {}  # flows per geometry
 
 def flows():
     """Every flow in the structure: (gate, is_lc, height, kind, geometry) for each arc (radius, start bearing)
-    and each entry leg (entry point, arc start). Decision 05-11-2026, for the descent plan."""
-    key = (VARIANT, T_DESIGN, ENTRY_OFFSET, K_SPACING, GATE_MARGIN)
+    and each entry leg (entry point, arc start). Decision 05-11-2026, for the descent plan. Block 22: with keep
+    flying on, also the gap of the ring after each L+C arc (kind ring), so that a descent avoids the ring too
+    (design check gate_check: a multicopter descending from an upper arc came within 30 m of an L+C in the gap)."""
+    key = (VARIANT, T_DESIGN, ENTRY_OFFSET, K_SPACING, GATE_MARGIN, RING_ON)
     if key not in _FLOWS:
         out = []
         for g in range(len(GATE_BEARINGS)):
             for lc in ((True,) if VARIANT == "shared" else (False, True)):
                 h = H_ARC[g % 2]
                 out.append((g, lc, h, "arc", (arc_radius(lc), arc_start_bearing(g, lc))))
-                out.append((g, lc, h, "leg", (offset_xy(g, lc, gate_distance()), arc_start(g, lc))))
+                tg = turn_geom(g, lc)
+                out.append((g, lc, h, "leg", (offset_xy(g, lc, gate_distance()), tg["T1"])))
+                out.append((g, lc, h, "turn", (tg["C"], tg["R"], tg["b1"], tg["sweep"], tg["sense"])))   # block 22
+                if RING_ON and lc:                 # block 22: the gap of the ring after this arc is a flow too
+                    out.append((g, lc, h, "ring", (arc_radius(lc), arc_start_bearing(g, lc) + ARC_DIR * ARC_DEG)))
         _FLOWS[key] = out
     return _FLOWS[key]
 
 
 def flow_distance(kind, geo, px, py):
     """Horizontal distance (m) from the points (px, py) to an arc or an entry leg."""
-    if kind == "arc":
+    if kind == "turn":                             # the fixed turn onto the arc (block 22): part of a circle around C
+        (cx, cy), rt, b1, sweep, sense = geo
+        rel = ((np.degrees(np.arctan2(px - cx, py - cy)) - b1) * sense) % 360
+        e1 = polar(b1, rt); e2 = polar(b1 + sense * sweep, rt)
+        ends = np.minimum(np.hypot(px - cx - e1[0], py - cy - e1[1]), np.hypot(px - cx - e2[0], py - cy - e2[1]))
+        return np.where(rel <= sweep, np.abs(np.hypot(px - cx, py - cy) - rt), ends)
+    if kind in ("arc", "ring"):                    # ring: the gap after an arc, up to the opposite arc (block 22)
         r, b0 = geo
+        span = ARC_DEG if kind == "arc" else 180.0 - ARC_DEG
         rel = ((np.degrees(np.arctan2(px, py)) - b0) * ARC_DIR) % 360
-        (ax, ay), (bx, by) = polar(b0, r), polar(b0 + ARC_DIR * ARC_DEG, r)
+        (ax, ay), (bx, by) = polar(b0, r), polar(b0 + ARC_DIR * span, r)
         ends = np.minimum(np.hypot(px - ax, py - ay), np.hypot(px - bx, py - by))
-        return np.where(rel <= ARC_DEG, np.abs(np.hypot(px, py) - r), ends)
+        return np.where(rel <= span, np.abs(np.hypot(px, py) - r), ends)
     (ax, ay), (bx, by) = geo
     dx, dy = bx - ax, by - ay
     t = np.clip(((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy), 0.0, 1.0)
@@ -625,6 +728,9 @@ def plan_descent(g, is_lc, x, y, v, hdg, h0, gs, avoid=True):
         for fg, flc, fh, kind, geo in flows():
             if fg == g and (VARIANT == "shared" or flc == is_lc):
                 continue
+            if kind == "ring" and fg == (g + 2) % len(GATE_BEARINGS) and (VARIANT == "shared" or is_lc):
+                continue           # block 22: the gap that leads into its own lane; ring_check and the lane rules
+                                   #    keep a drone there apart, as in the rest of its own lane
             near = flow_distance(kind, geo, px, py) < SEP_H
             if near.any():
                 forbid[near] |= band(grid, fh)[None, :]
@@ -690,7 +796,11 @@ class Vpms(core.Entity):
             self.eta_err = np.array([])              # relative error of the predicted time to the merge point
             self.hx = np.array([])                   # hover position (m east, north)
             self.hy = np.array([])
-            self.speedup = np.array([], dtype=bool)  # L+C leader speeding up for an L+C behind it
+            self.speedup = np.array([], dtype=bool)  # leader speeding up for an L+C behind it (P-17)
+            self.ring_go = np.array([], dtype=int)   # keep flying at the end of this arc: 0 not decided, 1 yes,
+                                                     #    -1 no (hold); decided once per arc (P-18)
+            self.t_ring = np.array([])               # time it started to keep flying (first time)
+            self.turning = np.array([], dtype=bool)  # on its fixed turn from the entry leg onto the arc (P-16)
         self.reset_state()
 
     def reset_state(self):
@@ -705,7 +815,17 @@ class Vpms(core.Entity):
         self.nogo_delays = []        # (acid, s) clearance delayed by a no-go zone (decision 05-11-2026)
         self.nogo_hold = []          # drones in a hold without a conflict-free descent (expected none)
         self.slow_entries = []       # (time, acid, m/s, note) drones created slower than V_ENTRY (safety net,
-                                     #    decision 06-11-2026; expected none below capacity)
+                                     #    decision 06-11-2026; empty since block 22: no safety net any more)
+        self.close_entries = []      # (time, acid, other, dh) drones created within SEP_H of another (block 22;
+                                     #    expected none)
+        self.ring_log = []           # (time, acid, event, info): ring, ring_join, ring_refused (P-18)
+        self.speedups = []           # (time, acid, type, follower) every start of making room (P-17)
+        self.sched_t = np.array([])  # list of arrivals from TRAFFIC (block 22): sim time at the gate, gate, type,
+        self.sched_g = np.array([], dtype=int)   # call sign
+        self.sched_lc = np.array([], dtype=bool)
+        self.sched_id = np.array([], dtype=object)
+        self.registered = set()      # call signs handed over by TRAFFIC (no longer announced)
+        self.gentle = set()          # indices that brake as an L+C this update (block 22, lc_like)
 
     def reset(self):
         super().reset()
@@ -786,9 +906,36 @@ class Vpms(core.Entity):
         return lo, (f"{lo:.1f} m/s instead of {v_full:.1f}: {traf.id[j]} ({STATE_NAMES[self.state[j]]}) "
                     f"{s_lead:.0f} m ahead at {v_lead:.1f} m/s, commanded {v_cap:.1f} m/s")
 
-    def register(self, acid, g, is_lc, t_now, t_pad=T_PAD, eta_err=0.0):
-        """Called by TRAFFIC just before it creates the drone at gate g."""
-        self.pending[acid] = (g, t_pad, eta_err)
+    def set_schedule(self, t_abs, gates, is_lc, acids):
+        """The list of arrivals of this run (block 22): simulation time at which each drone passes its gate, its
+        gate, its type and its call sign. VPMS may look H_ANNOUNCE ahead in it (announced)."""
+        order = np.argsort(np.asarray(t_abs, dtype=float), kind="stable")
+        self.sched_t = np.asarray(t_abs, dtype=float)[order]
+        self.sched_g = np.asarray(gates, dtype=int)[order]
+        self.sched_lc = np.asarray(is_lc, dtype=bool)[order]
+        self.sched_id = np.asarray(acids, dtype=object)[order]
+
+    def announced(self, now, gate=None, key=None):
+        """Drones that will pass a gate within H_ANNOUNCE s and are not created yet, as (time, is_lc), in time order;
+        for one gate, or for one lane (key)."""
+        if len(self.sched_t) == 0:
+            return []
+        lo = int(np.searchsorted(self.sched_t, now - DT, side="right"))
+        hi = int(np.searchsorted(self.sched_t, now + H_ANNOUNCE, side="right"))
+        out = []
+        for k in range(lo, hi):
+            g, lc = int(self.sched_g[k]), bool(self.sched_lc[k])
+            if self.sched_id[k] in self.registered:
+                continue
+            if (gate is None or g == gate) and (key is None or arc_key(g, lc) == key):
+                out.append((float(self.sched_t[k]), lc))
+        return out
+
+    def register(self, acid, g, is_lc, t_now, t_pad=T_PAD, eta_err=0.0, t_gate=None):
+        """Called by TRAFFIC just before it creates the drone at gate g. t_gate: the exact time it passed its gate
+        (block 22: TRAFFIC places the drone where it is at that time); default now."""
+        self.pending[acid] = (g, t_pad, eta_err, t_now if t_gate is None else t_gate)
+        self.registered.add(acid)
         self.last_entry[arc_key(g, is_lc)] = t_now + entry_leg_time(is_lc)
         self.last_gate[entry_key(g, is_lc)] = (t_now, is_lc)
 
@@ -801,10 +948,11 @@ class Vpms(core.Entity):
                 continue
             self.state[k] = ENTRY
             self.is_lc[k] = traf.type[k].upper() in LC_TYPES
-            self.gate[k], self.t_pad[k], self.eta_err[k] = info
-            self.t_arc_in[k] = self.t_merge[k] = self.t_touch[k] = np.inf
-            self.t_gate[k] = sim.simt
+            self.gate[k], self.t_pad[k], self.eta_err[k], self.t_gate[k] = info
+            self.t_arc_in[k] = self.t_merge[k] = self.t_touch[k] = self.t_ring[k] = np.inf
             self.speedup[k] = False
+            self.ring_go[k] = 0
+            self.turning[k] = False
 
     def event(self, i, name, info=""):
         fl = flightlog()
@@ -833,62 +981,188 @@ class Vpms(core.Entity):
             if not closing:
                 continue
             gap = float(np.hypot(dx, dy))
-            if self.is_lc[i] and gap > SEP_H + 2.0 and traf.tas[j] >= V_ARC[1] - 0.1:
-                v = min(v, float(traf.tas[j]))      # an L+C behind a leader on its wing: do not close in,
+            # block 22: the speed of the leader ALONG the follower's track, not its airspeed. A leader that turns in
+            # to the merge point moves away from the arc sideways, so the gap closes almost at the follower's own
+            # speed; with its airspeed the follower came within 32 m of a multicopter that was cleared while it
+            # made room at 11.18 m/s (design check gate_check, 16-11-2026)
+            v_along = max(float(traf.gseast[j] * np.sin(trk) + traf.gsnorth[j] * np.cos(trk)), 0.0)
+            if self.is_lc[i] and gap > SEP_H + 2.0 and v_along >= V_ARC[1] - 0.1:
+                v = min(v, v_along)                 # an L+C behind a leader on its wing: do not close in,
             else:                                   # but do not fall back below stall either
-                v = min(v, follow_speed(gap, traf.tas[j], v, self.is_lc[i]))
+                v = min(v, follow_speed(gap, v_along, v, self.lc_like(i)))
         return v
 
-    def lane_speed(self, i, lead, gap, v_lead, v, restore=()):
-        """Speed of drone i in its lane behind `lead` at this gap (m). Decision 03-11-2026: an L+C whose
-        leader speeds up for it (in `restore` this step, or self.speedup) does not fall back, because that
-        would take it below stall and off its wing; it flies no faster than its leader, so the gap cannot
-        shrink, and the gap opens from the front. If the leader cannot speed up and slows down, the
-        follower slows with it (and leaves its wing): the fall-back. Otherwise the normal rule."""
-        if self.is_lc[i] and (lead in restore or self.speedup[lead]) and gap > SEP_H + 2.0:
-            return float(min(v, v_lead))
-        return follow_speed(gap, v_lead, v, self.is_lc[i])
-
-    def restore_flags(self, idx, x, y, progress, d_start):
-        """Decision 03-11-2026: which L+C leaders must speed up. Per lane the drones in order (entry leg:
-        minus the distance to the arc start; arc: distance along the arc); an L+C (ENTRY or ARC) whose
-        follower is an L+C closer than GAP_MIN (straight line) speeds up for it, and so does the L+C ahead of
-        that leader while it is within reach (a chain, decision 05-11-2026). A leader on its entry leg
-        is flagged too, so that its follower does not fall back, but it speeds up only once it is on its
-        arc (decision 05-11-2026, see update)."""
+    def lc_behind(self, idx, progress, d_start):
+        """Block 22: the drones that have an L+C somewhere behind them in their lane (entry leg, arc, ring). Only
+        multicopters in shared lanes matter: they brake much harder (3.5 m/s2) than the L+C behind them (1.24)."""
         lanes = {}
         for i in idx:
             if self.state[i] == ENTRY:
                 pos = -d_start[i]
-            elif self.state[i] in (ARC, HOLD):
+            elif self.state[i] in (ARC, HOLD, RING):
                 pos = arc_radius(self.is_lc[i]) * np.radians(progress[i])
             else:
                 continue
             lanes.setdefault(arc_key(self.gate[i], self.is_lc[i]), []).append((pos, i))
-        restore = {}
-        reach = GAP_MIN + T_CLOSE * (V_LC_MAX - V_ARC[1])      # closer than this, a leader at V_ARC holds its
-        for members in lanes.values():                         # follower below V_LC_MAX (follow_speed): 78 m
+        out = set()
+        for members in lanes.values():
+            members.sort()                                      # from the back of the lane
+            seen_lc = False
+            for _, i in members:
+                if seen_lc and not self.is_lc[i]:
+                    out.add(i)
+                seen_lc = seen_lc or bool(self.is_lc[i])
+        return out
+
+    def lc_like(self, i):
+        """Block 22: True for an L+C, and for a multicopter with an L+C behind it in its lane (self.gentle): it plans its
+        braking with the deceleration of the L+C (1.24 m/s2 instead of 3.5), because the L+C behind it cannot brake
+        harder. Design check gate_check (16-11-2026): a multicopter at 11.18 m/s that braked at 3.5 m/s2 for the drone
+        ahead of it brought the L+C behind it within 31 m, also in a queue of multicopters on a shared arc."""
+        return bool(self.is_lc[i]) or i in getattr(self, "gentle", ())
+
+    def a_dec(self, i):
+        return A_DECEL[1] if self.lc_like(i) else A_DECEL[0]
+
+    def lane_speed(self, i, lead, gap, v_lead, v, restore=()):
+        """Speed of drone i in its lane behind `lead` at this gap (m). Decision 03-11-2026: an L+C whose
+        L+C leader speeds up for it (in `restore` this step, or self.speedup) does not fall back, because that
+        would take it below stall and off its wing; it flies no faster than its leader, so the gap cannot
+        shrink, and the gap opens from the front. If the leader cannot speed up and slows down, the
+        follower slows with it (and leaves its wing): the fall-back. Otherwise the normal rule (follow_speed),
+        also behind a multicopter that makes room (block 22): the multicopter cannot reach the wing speed of the
+        L+C, so the L+C still closes in, but at 1.25 m/s instead of 6.75 m/s, and falls back only when it is about
+        GAP_MIN + T_CLOSE x 1.25 m/s (60 m) behind it. Design check gate_check (16-11-2026): letting the L+C keep
+        its wing speed closer than that gave losses of separation when the multicopter ahead braked or turned in."""
+        if self.is_lc[i] and self.is_lc[lead] and (lead in restore or self.speedup[lead]) and gap > SEP_H + 2.0:
+            return float(min(v, v_lead))
+        return follow_speed(gap, v_lead, v, self.lc_like(i))
+
+    def along_lane(self, i, progress, d_start):
+        """Distance (m) of drone i from its entry point along its lane (entry leg, then arc or ring)."""
+        lc = bool(self.is_lc[i])
+        leg = gate_distance() - arc_start_along(lc)
+        if self.state[i] == ENTRY:
+            return leg - d_start[i]
+        return leg + arc_radius(lc) * np.radians(progress[i])
+
+    def restore_flags(self, idx, x, y, progress, d_start, now=None):
+        """Block 22 (P-17, decision 13-11-2026): which leaders speed up to make room. Per lane the drones in order
+        (entry leg, arc and ring; a drone in a hold ends a chain). A leader of any type whose follower is an L+C
+        so close that the L+C would have to slow below its wing speed (GAP_MIN + T_CLOSE x (V_ARC - leader speed),
+        straight line) speeds up, on its entry leg too; so does the last drone of a lane when an L+C is announced
+        for that lane that would pass the gate within that distance behind it at its present speed;
+        and so does the drone ahead of a leader that speeds up while it is within reach (a chain, any type). A
+        multicopter follower does not make its leader speed up: it falls back itself (cheap for an MC)."""
+        lanes = {}
+        for i in idx:
+            if self.state[i] == ENTRY:
+                pos = -d_start[i]
+            elif self.state[i] in (ARC, HOLD, RING):
+                pos = arc_radius(self.is_lc[i]) * np.radians(progress[i])
+            else:
+                continue
+            lanes.setdefault(arc_key(self.gate[i], self.is_lc[i]), []).append((pos, i))
+        restore, moving = {}, (ENTRY, ARC, RING)
+        for key, members in lanes.items():
             members.sort(reverse=True)                          # first = furthest along the lane
             pairs = []
             for (_, lead), (_, foll) in zip(members, members[1:]):
-                if (self.is_lc[lead] and self.is_lc[foll] and self.state[lead] in (ENTRY, ARC)
-                        and self.state[foll] in (ENTRY, ARC)):
+                if self.state[lead] in moving and self.state[foll] in moving:
                     gap = float(np.hypot(x[lead] - x[foll], y[lead] - y[foll]))
                     pairs.append((lead, foll, gap))
-                    if gap < GAP_MIN:
+                    reach_l = GAP_MIN + T_CLOSE * max(V_ARC[1] - float(traf.tas[lead]), 0.0)
+                    if self.is_lc[foll] and gap < reach_l:      # closer than this, the L+C would have to slow below
+                        restore[lead] = (traf.id[foll], gap)     # its wing speed (follow_speed)
+            last = members[-1][1]                               # announced L+C behind the last drone of the lane
+            if now is not None and self.state[last] in moving and last not in restore:
+                s_last = self.along_lane(last, progress, d_start)
+                for t_a, lc_a in self.announced(now, key=key):
+                    gap_pred = s_last + float(traf.tas[last]) * max(t_a - now, 0.0)
+                    if lc_a and gap_pred < GAP_MIN + T_CLOSE * max(V_ARC[1] - float(traf.tas[last]), 0.0):
+                        restore[last] = (f"an L+C announced in {t_a - now:.1f} s", gap_pred)
+                        break
+            for lead, foll, gap in reversed(pairs):             # a chain: room ahead of a leader that speeds up
+                if foll in restore and lead not in restore:
+                    reach = GAP_MIN + T_CLOSE * max(V_MAX[int(self.is_lc[foll])] - V_ARC[int(self.is_lc[lead])], 0.0)
+                    if gap < reach:
                         restore[lead] = (traf.id[foll], gap)
-            # a chain (decision 05-11-2026): an L+C that speeds up for the one behind it needs room ahead, so
-            # its own L+C leader speeds up too while it is within reach. Without this, with GAP_MIN 48 m the
-            # middle L+C of three stayed 48 m behind the front one and the last gap stayed at 43 m
-            for lead, foll, gap in reversed(pairs):
-                if foll in restore and lead not in restore and gap < reach:
-                    restore[lead] = (traf.id[foll], gap)
         return restore
+
+    def ring_check(self, i, x, y, progress, idx, now, d_own):
+        """Keep flying (P-18, decision 13-11-2026): may L+C i, which would start braking for the end of its arc now,
+        fly on along the circle to the arc of the gate opposite instead (True, '') or not (False, reason)? It flies
+        at its wing speed; the time windows use GAP_MIN at that speed plus T_RING_MARGIN, and the fastest and the
+        slowest time at which another drone can be at the same place (it may speed up to V_MAX or fly slower)."""
+        g = int(self.gate[i])
+        g2 = (g + 2) % len(GATE_BEARINGS)
+        r, v_r = arc_radius(True), V_ARC[1]
+        key2 = arc_key(g2, True)
+        t_j = now + (d_own + r * np.radians(180.0 - ARC_DEG)) / v_r       # at the start of the opposite arc
+        w = GAP_MIN / v_r + T_RING_MARGIN
+        for j in idx:
+            if j == i or self.state[j] not in WAITING or arc_key(self.gate[j], self.is_lc[j]) != key2:
+                continue
+            if not self.is_lc[j]:
+                return False, f"multicopter {traf.id[j]} in the lane of gate {g2}"
+            if self.state[j] == HOLD:
+                return False, f"{traf.id[j]} holds in the lane of gate {g2}"
+            if self.state[j] == ENTRY:
+                tx, ty = arc_start(g2, True)
+                d = float(np.hypot(tx - x[j], ty - y[j]))
+                t_lo, t_hi = now + d / V_MAX[1], now + d / max(float(traf.tas[j]), 1.0)
+                if t_lo - w < t_j < t_hi + w:
+                    return False, f"{traf.id[j]} reaches the junction in {t_lo - now:.0f}-{t_hi - now:.0f} s, ring {t_j - now:.0f} s"
+            elif self.state[j] == ARC:
+                s_k = r * np.radians(progress[j]) + float(traf.tas[j]) * (t_j - now)
+                if s_k < GAP_MIN + v_r * T_RING_MARGIN:
+                    return False, f"{traf.id[j]} only {s_k:.0f} m into the arc of gate {g2} at the junction"
+        leg = {lc: gate_distance() - arc_start_along(lc) for lc in (False, True)}
+        for t_a, lc_a in self.announced(now, gate=g2):
+            if VARIANT == "speed" and not lc_a:
+                continue                                           # its own lane; see the MC line below
+            if not lc_a:                                           # shared: an MC would be ahead of it or too close
+                if t_a + leg[False] / V_MAX[0] < t_j + w:
+                    return False, f"multicopter announced at gate {g2} in {t_a - now:.0f} s"
+                continue
+            t_lo, t_hi = t_a + leg[True] / V_MAX[1], t_a + leg[True] / V_ENTRY[1]
+            if t_lo - w < t_j < t_hi + w:
+                return False, f"L+C announced at gate {g2} in {t_a - now:.0f} s"
+        if VARIANT == "speed":                                     # it crosses the MC entry line of gate g2
+            along_c = np.sqrt(max(r ** 2 - lateral(False) ** 2, 0.0))
+            bx, by = offset_xy(g2, False, along_c)
+            end = arc_start_bearing(g, True) + ARC_DIR * ARC_DEG
+            dth = ((np.degrees(np.arctan2(bx, by)) - end) * ARC_DIR) % 360
+            t_x = now + (d_own + r * np.radians(dth)) / v_r
+            w_x = GAP_MIN * np.hypot(v_r, V_ENTRY[0]) / (v_r * V_ENTRY[0]) + T_RING_MARGIN
+            b = np.radians(GATE_BEARINGS[g2])
+            key_mc = arc_key(g2, False)
+            for j in idx:
+                if self.state[j] != ENTRY or arc_key(self.gate[j], self.is_lc[j]) != key_mc:
+                    continue
+                rem = float(x[j] * np.sin(b) + y[j] * np.cos(b)) - along_c    # m to the crossing (< 0: passed)
+                if rem < -GAP_MIN:
+                    continue
+                v_j = max(float(traf.tas[j]), 1.0)
+                t_lo = now + (rem / V_MAX[0] if rem > 0 else rem / v_j)
+                t_hi = now + rem / v_j
+                if t_lo - w_x < t_x < t_hi + w_x:
+                    return False, f"multicopter {traf.id[j]} on the entry line of gate {g2}"
+            leg_c = gate_distance() - along_c
+            for t_a, lc_a in self.announced(now, gate=g2):
+                if lc_a:
+                    continue
+                t_lo, t_hi = t_a + leg_c / V_MAX[0], t_a + leg_c / V_ENTRY[0]
+                if t_lo - w_x < t_x < t_hi + w_x:
+                    return False, f"multicopter announced at gate {g2} crosses in {t_lo - now:.0f}-{t_hi - now:.0f} s"
+        return True, ""
 
     def set_speedup(self, i, on, info=""):
         """Keep the speedup flag of drone i and log its start and end."""
         if on != bool(self.speedup[i]):
             self.event(i, "speedup" if on else "speedup_end", info)
+            if on:
+                self.speedups.append((sim.simt, traf.id[i], "LC" if self.is_lc[i] else "MC", info))
         self.speedup[i] = on
 
     # ------------------------------------------------------------------ commands to BlueSky
@@ -904,6 +1178,8 @@ class Vpms(core.Entity):
                 en.tell(i, tas)                 # for, not from the ramped target below (decision 09-11-2026)
             if A_ACC[lc] < A_DECEL[lc] and tas > traf.tas[i]:   # BlueSky has one ax_max per type (= A_DECEL):
                 tas = min(tas, float(traf.tas[i]) + A_ACC[lc] * DT)   # speed up at A_ACC (decision 09-11-2026)
+            if not lc and i in self.gentle and tas < traf.tas[i]:    # block 22: a multicopter with an L+C behind it
+                tas = max(tas, float(traf.tas[i]) - A_DECEL[1] * DT)  # brakes no harder than that L+C can (lc_like)
             traf.selspd[i] = vtas2cas(max(tas, 0.0), traf.alt[i])
             traf.swvnavspd[i] = False
         if alt is not None:
@@ -958,7 +1234,7 @@ class Vpms(core.Entity):
         # progress along the arc (deg) for drones on an arc, from the start of their arc
         progress = np.zeros(traf.ntraf)
         for i in idx:
-            if self.state[i] in (ARC, HOLD):
+            if self.state[i] in (ARC, HOLD, RING):
                 p = ((brg[i] - arc_start_bearing(self.gate[i], self.is_lc[i])) * ARC_DIR) % 360
                 progress[i] = 0.0 if p > 300 else p
 
@@ -970,20 +1246,23 @@ class Vpms(core.Entity):
         for i in entry:
             tx, ty = arc_start(self.gate[i], self.is_lc[i])
             d_start[i] = np.hypot(tx - x[i], ty - y[i])
-        # L+C leaders that speed up for an L+C behind them (decision 03-11-2026)
-        restore = self.restore_flags(idx, x, y, progress, d_start)
+        # leaders that speed up for an L+C behind them (decision 03-11-2026; any leader, block 22)
+        restore = self.restore_flags(idx, x, y, progress, d_start, now)
+        self.gentle = set(restore) | self.lc_behind(idx, progress, d_start)   # block 22: drones with an L+C behind
+                                               #    them plan their braking with the deceleration of the L+C (a_dec)
         for i in idx:
-            if self.state[i] not in (ENTRY, ARC) and self.speedup[i]:
+            if self.state[i] not in (ENTRY, ARC, RING) and self.speedup[i]:
                 self.set_speedup(i, False, "left the lane")
         for i in entry:
             lc = int(self.is_lc[i])
             tx, ty = arc_start(self.gate[i], lc)
             d = d_start[i]
-            v = V_ENTRY[lc]                    # no speeding up on the entry leg (decision 05-11-2026)
+            v = V_MAX[lc] if i in restore else V_ENTRY[lc]   # making room on the entry leg too (block 22, P-17;
+                                                             #    P-14 of 05-11-2026 is gone with the fixed turn point)
             key = arc_key(self.gate[i], self.is_lc[i])
             ahead_entry = [j for j in entry if j != i and arc_key(self.gate[j], self.is_lc[j]) == key
                            and d_start[j] < d]
-            ahead_arc = [j for j in idx if self.state[j] in (ARC, HOLD)
+            ahead_arc = [j for j in idx if self.state[j] in (ARC, HOLD, RING)
                          and arc_key(self.gate[j], self.is_lc[j]) == key]
             lead, gap = None, np.inf
             if ahead_entry:                                    # nearest drone ahead on the entry leg
@@ -1001,33 +1280,67 @@ class Vpms(core.Entity):
                 self.set_speedup(i, False, "gap restored")
             self.fly(i, track=np.degrees(np.arctan2(tx - x[i], ty - y[i])), tas=v,
                      alt=H_ARC[self.gate[i] % 2], vs=VS_ENTRY)
-            if d < look_ahead(traf.gs[i]) + traf.gs[i] * DT:          # start the turn onto the arc
+            t1x, t1y = turn_geom(self.gate[i], self.is_lc[i])["T1"]
+            if (np.hypot(t1x - x[i], t1y - y[i]) < traf.gs[i] * DT + 0.5         # at T1: start the fixed turn (P-16)
+                    or d < turn_lookahead(self.is_lc[i])):
                 self.state[i] = ARC
+                self.turning[i] = True
                 self.t_arc_in[i] = now
                 self.event(i, "arc_in", f"gate {self.gate[i]}")
 
-        # 2. arcs: follow the circle; no overtaking on the same arc
-        on_arc = idx[np.isin(self.state[idx], (ARC, HOLD))]
-        for key in set(arc_key(self.gate[i], self.is_lc[i]) for i in on_arc):
-            members = [i for i in on_arc if arc_key(self.gate[i], self.is_lc[i]) == key]
+        # 2. arcs: follow the circle; no overtaking on the same arc. Keep flying (P-18): an L+C that is not
+        #    cleared decides where it would start braking for the end of its arc whether it flies on (RING)
+        on_arc = idx[np.isin(self.state[idx], (ARC, HOLD, RING))]
+        lanes_now = {}                                         # lanes fixed at the start of the update: a drone that
+        for i in on_arc:                                       # joins the opposite lane this update (ring_join) is
+            lanes_now.setdefault(arc_key(self.gate[i], self.is_lc[i]), []).append(i)   # handled there from the next one
+        for key, members in lanes_now.items():
             members.sort(key=lambda i: -progress[i])          # first = furthest along
             for rank, i in enumerate(members):
                 lc = int(self.is_lc[i])
                 r = arc_radius(lc)
                 d_own = r * np.radians(max(ARC_DEG - progress[i], 0.0))   # to the end of its own arc
+                if self.state[i] == RING and progress[i] >= 180.0 - 1e-6:   # at the start of the opposite arc
+                    g_old = int(self.gate[i])
+                    self.gate[i] = (g_old + 2) % len(GATE_BEARINGS)
+                    self.state[i], self.ring_go[i] = ARC, 0
+                    self.ring_log.append((now, traf.id[i], "ring_join", f"gate {g_old} -> {self.gate[i]}"))
+                    self.event(i, "ring_join", f"gate {g_old} -> {self.gate[i]}")
+                    continue                                   # in its new lane from the next update
+                if (RING_ON and lc and self.state[i] == ARC and self.ring_go[i] == 0
+                        and d_own <= traf.tas[i] ** 2 / (2 * A_DECEL[lc]) + traf.tas[i] * DT + 2.0):
+                    lead_holds = rank > 0 and (self.state[members[rank - 1]] == HOLD
+                                               or self.ring_go[members[rank - 1]] == -1)
+                    if lead_holds:
+                        ok, why = False, f"{traf.id[members[rank - 1]]} ahead holds"
+                    elif traf.tas[i] < V_ARC[1] - 0.5:
+                        ok, why = False, f"already braking ({traf.tas[i]:.1f} m/s)"
+                    else:
+                        ok, why = self.ring_check(i, x, y, progress, idx, now, d_own)
+                    self.ring_go[i] = 1 if ok else -1
+                    if not ok:
+                        self.ring_log.append((now, traf.id[i], "ring_refused", why))
+                        self.event(i, "ring_refused", why)
                 if self.state[i] == ARC and (progress[i] >= ARC_DEG
                                              or (d_own < ARRIVE_R and traf.gs[i] < ARRIVE_V)):
-                    self.state[i] = HOLD
-                    self.hx[i], self.hy[i] = polar(arc_start_bearing(self.gate[i], self.is_lc[i])
-                                                   + ARC_DIR * ARC_DEG, r)
-                    self.event(i, "hold")
-                    if self.speedup[i]:
-                        self.set_speedup(i, False, "hold")
+                    if self.ring_go[i] == 1:                   # keep flying (P-18)
+                        self.state[i] = RING
+                        self.t_ring[i] = min(self.t_ring[i], now)
+                        self.ring_log.append((now, traf.id[i], "ring", f"gate {self.gate[i]}"))
+                        self.event(i, "ring", f"gate {self.gate[i]} -> {(self.gate[i] + 2) % len(GATE_BEARINGS)}")
+                    else:
+                        self.state[i] = HOLD
+                        self.hx[i], self.hy[i] = polar(arc_start_bearing(self.gate[i], self.is_lc[i])
+                                                       + ARC_DIR * ARC_DEG, r)
+                        self.event(i, "hold")
+                        if self.speedup[i]:
+                            self.set_speedup(i, False, "hold")
                 if self.state[i] == HOLD:
                     self.hover(i, self.hx[i], self.hy[i])
                     continue
-                v = V_LC_MAX if i in restore else V_ARC[lc]
-                v = min(v, np.sqrt(2 * A_DECEL[lc] * d_own))   # can always stop at the end of its arc
+                v = V_MAX[lc] if i in restore else V_ARC[lc]
+                if self.state[i] == ARC and self.ring_go[i] != 1:
+                    v = min(v, np.sqrt(2 * self.a_dec(i) * d_own))  # can always stop at the end of its arc
                 if rank > 0:                                   # drone ahead on the same arc
                     lead = members[rank - 1]
                     # straight-line distance, as in the separation check (decision 04-11-2026; before,
@@ -1036,16 +1349,34 @@ class Vpms(core.Entity):
                     gap = np.hypot(x[lead] - x[i], y[lead] - y[i])
                     v_lead = 0.0 if self.state[lead] == HOLD else traf.tas[lead]
                     v = self.lane_speed(i, lead, gap, v_lead, v, restore)
-                    if self.state[lead] == ARC:                # the leader will stop at the end of the
-                        d_end = r * np.radians(max(ARC_DEG - progress[i], 0.0))   # arc if not cleared:
-                        v = min(v, np.sqrt(2 * A_DECEL[lc] * max(d_end - GAP_MIN, 0.0)))  # stop GAP_MIN before
+                    if self.state[lead] == ARC and self.ring_go[lead] != 1 and self.state[i] == ARC:
+                        d_end = r * np.radians(max(ARC_DEG - progress[i], 0.0))   # the leader will stop at the
+                        v = min(v, np.sqrt(2 * self.a_dec(i) * max(d_end - GAP_MIN, 0.0)))  # end of the arc if not
+                                                                                          # cleared: stop GAP_MIN before
                 v = self.departing_limit(i, idx, x, y, dist, v)
                 if i in restore:
                     self.set_speedup(i, v > V_ARC[lc] + 0.1, "for {}, gap {:.0f} m".format(*restore[i]))
                 elif self.speedup[i]:
                     self.set_speedup(i, False, "gap restored")
                 alt = H_ARC[self.gate[i] % 2]
-                if v >= V_GROUND:                              # normal: airspeed on the arc
+                if self.turning[i]:                            # the fixed turn (P-16): along its circle to T2
+                    tg = turn_geom(self.gate[i], self.is_lc[i])
+                    if self.state[i] != ARC or progress[i] >= tg["p2"] - 0.2:
+                        self.turning[i] = False
+                if self.turning[i]:
+                    cx, cy = tg["C"]
+                    rt = tg["R"]
+                    bc = np.degrees(np.arctan2(x[i] - cx, y[i] - cy))
+                    a = max(L_MIN / 3.0, float(traf.gs[i]) * 1.0) / rt          # aim about 1 s ahead on the circle,
+                    ax, ay = polar(bc + tg["sense"] * np.degrees(a), rt / np.cos(a))   # placed so that it flies on it
+                    track = np.degrees(np.arctan2(cx + ax - x[i], cy + ay - y[i]))
+                    if v >= V_GROUND:
+                        self.fly(i, track=track, tas=v, alt=alt, vs=VS_ENTRY)
+                    else:
+                        tr = np.radians(track)
+                        self.fly_ground(i, v * np.cos(tr), v * np.sin(tr))
+                        self.fly(i, alt=alt, vs=VS_ENTRY)
+                elif v >= V_GROUND:                            # normal: airspeed on the arc
                     # aim at a point one look-ahead distance further along the arc (pure pursuit);
                     # placed at r / cos(a), so that the drone flies exactly on the circle of radius r
                     a = look_ahead(traf.gs[i]) / r
@@ -1159,25 +1490,34 @@ class Vpms(core.Entity):
         not shorten its path). Before: the drone that entered its arc first, which gave the same drones a
         different order in the two variants (the MC entry leg takes 7 s on shared arcs, 30 s on speed-separated
         arcs). Ties (two drones in one update): the earlier drawn arrival, the number in the call sign."""
-        waiting = [i for i in idx if self.state[i] in (ENTRY, ARC, HOLD)]
+        waiting = [i for i in idx if self.state[i] in WAITING]
         if not waiting:
             return None
         first = min(waiting, key=lambda i: (self.t_gate[i], call_number(traf.id[i])))
-        return first if self.state[first] in (ARC, HOLD) else None
+        return first if self.state[first] in (ARC, HOLD, RING) else None
 
     # ------------------------------------------------------------------ command
     @stack.command(name="VPMS")
-    def command(self, what: str = "SHOW", value: float = 0.0):
-        """VPMS [SHOW | SHARED | SPEED | TARGET s | OFFSET m | MARGIN m | TIME | DISTANCE]: draw the structure,
-        choose the arc variant, set the target separation (s), the side offset of each entry point (m, speed
-        variant) or the length of the entry leg (m, design checks only). Variant, target, offset and margin before
-        the traffic starts."""
-        global VARIANT, T_TARGET, ENTRY_OFFSET, ARC_SPACING, GATE_MARGIN
+    def command(self, what: str = "SHOW", value: str = "0"):
+        """VPMS [SHOW | SHARED | SPEED | TARGET s | OFFSET m | MARGIN m | TIME | DISTANCE | RING ON/OFF | HORIZON s]:
+        draw the structure, choose the arc variant, set the target separation (s), the side offset of each entry
+        point (m, speed variant), the length of the entry leg (m, design checks only), keep flying for the L+C on or
+        off (P-18) or the horizon of the announcement (s). All before the traffic starts."""
+        global VARIANT, T_TARGET, ENTRY_OFFSET, ARC_SPACING, GATE_MARGIN, RING_ON, H_ANNOUNCE
         what = what.upper()
+        if what == "RING":
+            RING_ON = str(value).upper() not in ("OFF", "0", "FALSE", "NO")
+            return True, f"VPMS keep flying for the L+C (ring): {'on' if RING_ON else 'off'}"
+        try:
+            value = float(value)
+        except ValueError:
+            return False, f"VPMS {what}: number expected, got {value}"
+        if what == "HORIZON" and value >= 0:
+            H_ANNOUNCE = float(value)
+            return True, f"VPMS announcement horizon {H_ANNOUNCE:g} s"
         if what == "MARGIN" and value > 0:            # decision 06-11-2026: for the design check entryprobe
             GATE_MARGIN = float(value)
-            return True, (f"VPMS entry leg {GATE_MARGIN:g} m: gates at {gate_distance():.0f} m; hand-over MC-MC "
-                          f"{handover_time(False, False):.1f} s, L+C behind MC {handover_time(False, True):.1f} s")
+            return True, f"VPMS entry leg {GATE_MARGIN:g} m: gates at {gate_distance():.0f} m"
         if what in ("TIME", "DISTANCE"):
             ARC_SPACING = what.lower()
             return True, f"VPMS spacing in a lane: {ARC_SPACING}"
