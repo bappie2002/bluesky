@@ -37,19 +37,20 @@ mods = {"vpms": plugin_module("vpms", "Vpms"), "thesis_traffic": plugin_module("
         "energy": plugin_module("energy", "Energy")}
 vp, sc, en = mods["vpms"].Vpms.implinstance(), mods["thesis_traffic"].Traffic.implinstance(), mods["energy"].Energy.implinstance()
 V = mods["vpms"]
-print(f"Variant {variant}, prediction error {eta} %, {demand} drones/h, target {V.T_TARGET:g} s "
-      f"(structure designed for {V.T_DESIGN:g} s): radius MC {V.arc_radius(False):.0f} m, "
-      f"L+C {V.arc_radius(True):.0f} m, gates at {V.gate_distance():.0f} m")
+M = V.M                                  # every number and formula (experimenten/config/model.py)
+print(f"Variant {variant}, prediction error {eta} %, {demand} drones/h, target {M.T_TARGET:g} s "
+      f"(structure designed for {M.T_DESIGN:g} s): radius MC {M.arc_radius(False):.0f} m, "
+      f"L+C {M.arc_radius(True):.0f} m, gates at {M.gate_distance():.0f} m")
 
 los_pairs, overshoot, max_radial, trans_on_arc, spawned = set(), 0.0, 0.0, set(), set()
 sped_up, v_max_seen = set(), 0.0       # L+C leaders that sped up for an L+C behind them (decision 03-11-2026)
 braking_to_end = set()                 # L+C below stall because it brakes to the end of its arc (decision 04-11-2026)
 perf_seen = {}                         # BlueSky limits per type, as BlueSky uses them (decision 04-11-2026)
 prev_alt, vs_fast, vrs_steps, merge_dev, seen_final = {}, 0.0, 0, 0.0, set()   # descent checks (05-11-2026)
-print(f"Entry offset {V.entry_offset():.1f} m per side (speed variant; computed {V.entry_offset_min():.1f} m); "
-      f"lane gap {V.GAP_MIN:.0f} m; arcs at {V.H_ARC[0]:.2f} / {V.H_ARC[1]:.2f} m; gate rule "
-      f"{V.SEP_H / V.V_ENTRY[0]:.2f} s behind an MC, {V.SEP_H / V.V_ENTRY[1]:.2f} s behind an L+C; fixed turn radius "
-      f"MC lane {V.turn_radius(False):.1f} m, L+C lane {V.turn_radius(True):.1f} m; ring {'on' if V.RING_ON else 'off'}")
+print(f"Entry offset {M.entry_offset():.1f} m per side (speed variant; computed {M.entry_offset_min():.1f} m); "
+      f"lane gap {M.GAP_MIN:.0f} m; arcs at {M.H_ARC[0]:.2f} / {M.H_ARC[1]:.2f} m; gate rule "
+      f"{M.SEP_H / M.V_ENTRY[0]:.2f} s behind an MC, {M.SEP_H / M.V_ENTRY[1]:.2f} s behind an L+C; fixed turn radius "
+      f"MC lane {M.turn_radius(False):.1f} m, L+C lane {M.turn_radius(True):.1f} m; ring {'on' if M.RING_ON else 'off'}")
 v_type_max = [0.0, 0.0]                # highest speed of a leader that makes room, per type (block 22)
 cleared_at = {}                        # acid -> time of its go (FCFS order check, decision 06-11-2026)
 prev_tas, acc_seen, dec_seen = {}, [0.0, 0.0], [0.0, 0.0]   # observed acceleration per type (09-11-2026)
@@ -59,43 +60,43 @@ while bs.sim.simt < float(warmup) + float(measure) + 3000 and not sc.done:
     spawned.update(bs.traf.id)
     for i, acid in enumerate(bs.traf.id):                                  # acceleration per type (09-11-2026)
         if acid in prev_tas and vp.state[i] > 0:
-            a_obs = (float(bs.traf.tas[i]) - prev_tas[acid]) / V.DT
+            a_obs = (float(bs.traf.tas[i]) - prev_tas[acid]) / M.DT
             k = int(vp.is_lc[i])
             acc_seen[k], dec_seen[k] = max(acc_seen[k], a_obs), max(dec_seen[k], -a_obs)
         prev_tas[acid] = float(bs.traf.tas[i])
     for i, acid in enumerate(bs.traf.id):
-        if vp.state[i] == V.DIRECT and acid not in cleared_at:
+        if vp.state[i] == M.DIRECT and acid not in cleared_at:
             cleared_at[acid] = bs.sim.simt
     for i, acid in enumerate(bs.traf.id):                                  # descent checks (05-11-2026)
-        if vp.state[i] == V.DIRECT:
+        if vp.state[i] == M.DIRECT:
             if acid in prev_alt:
-                rate = (prev_alt[acid] - float(bs.traf.alt[i])) / V.DT          # descent rate in this step
+                rate = (prev_alt[acid] - float(bs.traf.alt[i])) / M.DT          # descent rate in this step
                 vs_fast = max(vs_fast, rate)
-                if rate > V.VS_DIRECT_MAX + 0.01 and bs.traf.gs[i] < V.K_VRS * V.V_IH[int(vp.is_lc[i])]:
+                if rate > M.VS_DIRECT_MAX + 0.01 and bs.traf.gs[i] < M.K_VRS * M.V_IH[int(vp.is_lc[i])]:
                     vrs_steps += 1
             prev_alt[acid] = float(bs.traf.alt[i])
-        elif vp.state[i] == V.FINAL and acid not in seen_final:
+        elif vp.state[i] == M.FINAL and acid not in seen_final:
             seen_final.add(acid)                                          # just arrived at the merge point
-            merge_dev = max(merge_dev, abs(float(bs.traf.alt[i]) - V.H_MERGE))
+            merge_dev = max(merge_dev, abs(float(bs.traf.alt[i]) - M.H_MERGE))
     if n < 2:
         continue
-    x, y = V.to_xy(bs.traf.lat, bs.traf.lon)
+    x, y = M.to_xy(bs.traf.lat, bs.traf.lon)
     dh = np.hypot(x[:, None] - x[None, :], y[:, None] - y[None, :])
     dv = np.abs(bs.traf.alt[:, None] - bs.traf.alt[None, :])
     on_pad = bs.traf.alt < 0.1
-    los = (dh < V.SEP_H) & (dv < V.SEP_V) & ~np.eye(n, dtype=bool) & ~(on_pad[:, None] & on_pad[None, :])
+    los = (dh < M.SEP_H) & (dv < M.SEP_V) & ~np.eye(n, dtype=bool) & ~(on_pad[:, None] & on_pad[None, :])
     for a, b in zip(*np.where(np.triu(los))):
         pair = tuple(sorted((bs.traf.id[a], bs.traf.id[b])))
         if pair not in los_pairs:
-            S = V.STATE_NAMES
+            S = M.STATE_NAMES
             print(f"   LoS t={bs.sim.simt:.0f}: {bs.traf.id[a]} {S[vp.state[a]]} r={np.hypot(x[a], y[a]):.0f} m "
                   f"alt={bs.traf.alt[a]:.0f} | {bs.traf.id[b]} {S[vp.state[b]]} r={np.hypot(x[b], y[b]):.0f} m "
                   f"alt={bs.traf.alt[b]:.0f} | dh={dh[a, b]:.0f} m dv={dv[a, b]:.1f} m")
         los_pairs.add(pair)
     prog_all = {}
     for i in range(n):
-        if vp.state[i] in (V.ARC, V.HOLD, V.RING_ON):
-            p_ = (np.degrees(np.arctan2(x[i], y[i])) - V.arc_start_bearing(vp.gate[i], vp.is_lc[i])) % 360
+        if vp.state[i] in (M.ARC, M.HOLD, M.RING_ON):
+            p_ = (np.degrees(np.arctan2(x[i], y[i])) - M.arc_start_bearing(vp.gate[i], vp.is_lc[i])) % 360
             prog_all[i] = 0.0 if p_ > 300 else p_
         try:
             P = bs.traf.perf
@@ -103,17 +104,17 @@ while bs.sim.simt < float(warmup) + float(measure) + 3000 and not sc.done:
         except (AttributeError, IndexError):
             pass
     for i in range(n):
-        if vp.state[i] in (V.ARC, V.RING_ON):
-            err = np.hypot(x[i], y[i]) - V.arc_radius(vp.is_lc[i])        # + outside, - inside
-            prog = (np.degrees(np.arctan2(x[i], y[i])) - V.arc_start_bearing(vp.gate[i], vp.is_lc[i])) % 360
+        if vp.state[i] in (M.ARC, M.RING_ON):
+            err = np.hypot(x[i], y[i]) - M.arc_radius(vp.is_lc[i])        # + outside, - inside
+            prog = (np.degrees(np.arctan2(x[i], y[i])) - M.arc_start_bearing(vp.gate[i], vp.is_lc[i])) % 360
             prog = 0.0 if prog > 300 else prog
             if prog > 1.0:
                 overshoot = min(overshoot, err)                        # inside the circle: overshoot
             if prog > 20.0:
                 max_radial = max(max_radial, abs(err))                 # once on the arc
-            if vp.is_lc[i] and bs.traf.tas[i] < 11.8 and vp.state[i] == V.ARC:
-                key = V.arc_key(vp.gate[i], vp.is_lc[i])
-                ahead = any(j != i and V.arc_key(vp.gate[j], vp.is_lc[j]) == key and prog_all[j] > prog_all[i]
+            if vp.is_lc[i] and bs.traf.tas[i] < 11.8 and vp.state[i] == M.ARC:
+                key = M.arc_key(vp.gate[i], vp.is_lc[i])
+                ahead = any(j != i and M.arc_key(vp.gate[j], vp.is_lc[j]) == key and prog_all[j] > prog_all[i]
                             for j in prog_all)
                 (trans_on_arc if ahead else braking_to_end).add(bs.traf.id[i])
         if vp.speedup[i]:
@@ -125,23 +126,23 @@ while bs.sim.simt < float(warmup) + float(measure) + 3000 and not sc.done:
 merge = np.diff([t for t, _ in vp.merges]); touch = np.diff([t for t, _ in vp.touchdowns])
 print(f"\nSimulated {bs.sim.simt:.0f} s; {len(spawned)} drones created, "
       f"{len(vp.touchdowns)} landed, {bs.traf.ntraf} still flying (expected 0)")
-print(f"Merge-point intervals:  min {merge.min():.1f} s, mean {merge.mean():.1f} s  (target {V.T_TARGET:.0f} s)")
-t_min = V.T_PAD + (V.K_SPACING * V.SEP_V - V.H_SLOW) / V.V_DESC[0] + V.H_SLOW / V.V_DESC[1]   # column rule
+print(f"Merge-point intervals:  min {merge.min():.1f} s, mean {merge.mean():.1f} s  (target {M.T_TARGET:.0f} s)")
+t_min = M.T_PAD + (M.K_SPACING * M.SEP_V - M.H_SLOW) / M.V_DESC[0] + M.H_SLOW / M.V_DESC[1]   # column rule
 print(f"Touchdown intervals:    min {touch.min():.1f} s  (never below {t_min:.1f} s, the column rule; "
       f"one drone at a time in the final descent when the target is at least 33.5 s)")
 print(f"Arcs: overshoot to the inside {max(-overshoot, 0.0):.1f} m; largest deviation after the first 20 deg {max_radial:.1f} m")
 print(f"Losses of separation (32 m and 7.62 m): {len(los_pairs)} pairs {sorted(los_pairs)[:6]}")
 print(f"Observed acceleration: MC up to {acc_seen[0]:.2f}, braking {dec_seen[0]:.2f} m/s2; L+C up to {acc_seen[1]:.2f}, "
-      f"braking {dec_seen[1]:.2f} m/s2 (at most MC {V.A_ACC[0]:.2f} / {V.A_DECEL[0]:.2f}, L+C {V.A_ACC[1]:.2f} / "
-      f"{V.A_DECEL[1]:.2f}; decision 09-11-2026)")
-print(f"Drones created within {V.SEP_H:.0f} m of another (block 22, no safety net): {len(vp.close_entries)} (expected 0)")
+      f"braking {dec_seen[1]:.2f} m/s2 (at most MC {M.A_ACC[0]:.2f} / {M.A_DECEL[0]:.2f}, L+C {M.A_ACC[1]:.2f} / "
+      f"{M.A_DECEL[1]:.2f}; decision 09-11-2026)")
+print(f"Drones created within {M.SEP_H:.0f} m of another (block 22, no safety net): {len(vp.close_entries)} (expected 0)")
 for t_ce, acid_ce, other_ce, d_ce in vp.close_entries[:6]:
     print(f"   t={t_ce:.0f} {acid_ce}: {other_ce} at {d_ce:.1f} m")
 print(f"L+C below stall on an arc (behind a slower or holding drone): {len(trans_on_arc)} {sorted(trans_on_arc)[:6]}")
 print(f"L+C below stall while braking to the end of its own arc (no drone ahead): {len(braking_to_end)}")
-print(f"Direct leg: fastest descent {vs_fast:.2f} m/s (at most {V.VS_FAST:.0f}); faster than {V.VS_DIRECT_MAX:.0f} m/s "
-      f"below {V.K_VRS} v_ih: {vrs_steps} steps (expected 0); height at the merge point off 40 m by at most {merge_dev:.2f} m")
-order = [V.call_number(a) for a in sorted(cleared_at, key=cleared_at.get)]   # call number = drawn arrival order
+print(f"Direct leg: fastest descent {vs_fast:.2f} m/s (at most {M.VS_FAST:.0f}); faster than {M.VS_DIRECT_MAX:.0f} m/s "
+      f"below {M.K_VRS} v_ih: {vrs_steps} steps (expected 0); height at the merge point off 40 m by at most {merge_dev:.2f} m")
+order = [M.call_number(a) for a in sorted(cleared_at, key=cleared_at.get)]   # call number = drawn arrival order
 out_of_order = sum(1 for a, b in zip(order, order[1:]) if b < a)
 print(f"FCFS: {len(order)} clearances, {out_of_order} out of gate order (expected 0: the start line is the gate)")
 nd = [d for _, d in vp.nogo_delays]
@@ -150,13 +151,13 @@ print(f"No-go zone: {len(nd)} clearances delayed" + (f", longest {max(nd):.1f} s
 n_mc = sum(1 for _, _, typ, _ in vp.speedups if typ == "MC")
 n_ann = sum(1 for _, _, _, info in vp.speedups if "announced" in info)
 print(f"Leaders that made room for an L+C (P-17): {len(sped_up)} drones, {len(vp.speedups)} times ({n_mc} by an MC, "
-      f"{n_ann} for an announced L+C); fastest MC {v_type_max[0]:.2f} m/s (at most {V.V_MC_MAX:.2f}), "
-      f"L+C {v_type_max[1]:.2f} m/s (at most {V.V_LC_MAX})")
+      f"{n_ann} for an announced L+C); fastest MC {v_type_max[0]:.2f} m/s (at most {M.V_MC_MAX:.2f}), "
+      f"L+C {v_type_max[1]:.2f} m/s (at most {M.V_LC_MAX})")
 rl = vp.ring_log
 n_ring = len({a for _, a, e, _ in rl if e == "ring"})
 n_join = sum(1 for _, _, e, _ in rl if e == "ring_join")
 refused = [info for _, _, e, info in rl if e == "ring_refused"]
-print(f"Keep flying (ring, P-18, {'on' if V.RING_ON else 'off'}): {n_ring} L+C flew on, {n_join} times onto the opposite arc; "
+print(f"Keep flying (ring, P-18, {'on' if M.RING_ON else 'off'}): {n_ring} L+C flew on, {n_join} times onto the opposite arc; "
       f"refused {len(refused)} times")
 kinds = {}
 for info in refused:
@@ -170,7 +171,7 @@ for k, c in sorted(kinds.items(), key=lambda kv: -kv[1]):
 for typ, (vmax, vsmin, vsmax, axmax, hmax) in sorted(perf_seen.items()):
     print(f"BlueSky limits {typ}: speed max {vmax:.1f} m/s, vertical {vsmin:.1f} to {vsmax:.1f} m/s, "
           f"acceleration {axmax:.2f} m/s2, ceiling {hmax:.0f} m (expected for GMC/GLC: 17.0 / 15.4, -5 to 5, "
-          f"MC {V.A_DECEL[0]:.2f} / L+C {V.A_DECEL[1]:.2f}, 150)")
+          f"MC {M.A_DECEL[0]:.2f} / L+C {M.A_DECEL[1]:.2f}, 150)")
 holds = sum(1 for t, _ in vp.merges)  # placeholder to keep names short
 import csv
 rows = list(csv.DictReader(open(f"output/vpms_{variant}/flights.csv")))
@@ -183,7 +184,7 @@ for cfg in ("MC", "LC"):
 # transitions per L+C (decision 09-11-2026): off and on the wing alternate and every L+C lands on its rotors, so an
 # L+C created on its wing lands with an odd number (1, 3, 5, ...); an even number means a transition was missed
 # or counted twice (block 11 missed every rotor -> wing transition)
-v_stall = mods["energy"].LC.v_stall
+v_stall = M.LC.v_stall
 below = set()                                                          # since block 22 every drone is created at its entry speed
 lc_rows = [x for x in rows if x["config"] == "LC"]
 n_tr = {}

@@ -5,8 +5,8 @@
                a loss of separation (at the end with its severity), end. Enough to rebuild
                each drone's timeline.
 
-Separation (decision 05-11-2026): min_sep is the smallest horizontal distance to a drone that is
-less than SEP_V apart vertically (before: to any drone, also one far above it). A loss of separation
+Separation: min_sep is the smallest horizontal distance to a drone that is
+less than SEP_V apart vertically. A loss of separation
 (LoS) is dh < SEP_H and dv < SEP_V. Its severity (the intrusion severity of Scholtes 2018, eq. 6, after
 Maas et al. 2016) is how deep the protected cylinder is entered,
 min(1 - dh / SEP_H, 1 - dv / SEP_V): 0 at its edge, 1 at the same position; the smaller of the two,
@@ -16,7 +16,7 @@ number of episodes (n_los) and the highest severity (los_sev).
   trace.csv    one line per drone per second. Only with "FLIGHTLOG name TRACE":
                large, meant for figures and debugging, not for the experiments.
   run.json     the settings of the run (variant, target, structure, demand, seed, ...), written by
-               TRAFFIC when it starts (run_info, decision 06-11-2026), so that the analysis knows
+               TRAFFIC when it starts (run_info), so that the analysis knows
                which run it reads (delay needs the variant: experimenten/analysis/delays.py).
 
 Needs the ENERGY plugin (load ENERGY first).
@@ -29,15 +29,12 @@ import sys
 import numpy as np
 from bluesky import core, stack, traf, sim
 
-# =============================================================================
-# PARAMETERS
-# =============================================================================
-DT = 1.0            # update interval (s); events are therefore accurate to 1 s
-SEP_H = 32.0        # m: horizontal separation minimum (Metropolis II, decision 23-10-2026)
-SEP_V = 7.62        # m: vertical separation minimum (25 ft, Metropolis II)
-FOLDER = "output"   # parent folder of the run folders
+EXPERIMENTEN = os.environ.get("EXPERIMENTEN", os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "experimenten"))
+sys.path.insert(0, os.path.join(EXPERIMENTEN, "config"))
+import model as M   # noqa: E402  (separation minima, flight modes, update interval)
 
-MODES = ["hover", "rotor", "wing"]          # same numbering as in ENERGY
+FOLDER = "output"   # parent folder of the run folders
 # Copied from ENERGY every step, so they are still known when a drone is deleted
 FROM_ENERGY = ["is_lc", "used_wh", "soc", "soc_start", "power", "mode",
                "wh_hover", "wh_rotor", "wh_wing", "wh_trans", "n_trans"]
@@ -76,7 +73,7 @@ class FlightLog(core.Entity):
             self.t_hover = np.array([])               # time per mode (s)
             self.t_rotor = np.array([])
             self.t_wing = np.array([])
-            self.min_sep = np.array([])               # smallest horizontal distance to a drone less than SEP_V apart (m)
+            self.min_sep = np.array([])               # smallest horizontal distance to a drone less than M.SEP_V apart (m)
             self.los_time = np.array([])              # time inside the separation minima (s)
             self.in_los = np.array([], dtype=bool)
             self.n_los = np.array([], dtype=int)      # number of LoS episodes
@@ -95,7 +92,7 @@ class FlightLog(core.Entity):
         self.los_sev[-n:] = 0.0
         self.ep_sev[-n:] = -np.inf
 
-    @core.timed_function(name="flightlog", dt=DT)
+    @core.timed_function(name="flightlog", dt=M.DT_LOG)
     def update(self, dt):
         energy = energy_plugin()
         if traf.ntraf == 0 or not self.files or energy is None:
@@ -109,7 +106,7 @@ class FlightLog(core.Entity):
             self.event(i, "spawn")
         # Change of flight mode: the event is the new mode, info is the old one
         for i in np.flatnonzero(self.started & (self.mode != old_mode)):
-            self.event(i, MODES[int(self.mode[i])], MODES[int(old_mode[i])])
+            self.event(i, M.MODES[int(self.mode[i])], M.MODES[int(old_mode[i])])
         self.started[:] = True
 
         # Time per mode
@@ -126,10 +123,10 @@ class FlightLog(core.Entity):
         dh = np.hypot(x[:, None] - x[None, :], y[:, None] - y[None, :])   # horizontal (m)
         dv = np.abs(traf.alt[:, None] - traf.alt[None, :])                 # vertical (m)
         np.fill_diagonal(dh, np.inf)
-        close = dv < SEP_V
+        close = dv < M.SEP_V
         self.min_sep = np.minimum(self.min_sep, np.where(close, dh, np.inf).min(axis=1))
-        inside = (dh < SEP_H) & close
-        sev = np.where(inside, np.minimum(1 - dh / SEP_H, 1 - dv / SEP_V), -np.inf)
+        inside = (dh < M.SEP_H) & close
+        sev = np.where(inside, np.minimum(1 - dh / M.SEP_H, 1 - dv / M.SEP_V), -np.inf)
         worst = sev.argmax(axis=1)                       # the other drone that is deepest inside
         los = inside.any(axis=1)
         self.los_time += np.where(los, dt, 0.0)
@@ -151,13 +148,12 @@ class FlightLog(core.Entity):
         if "trace" in self.files:
             for i in range(traf.ntraf):
                 self.write("trace", [sim.simt, traf.id[i], f"{traf.lat[i]:.6f}", f"{traf.lon[i]:.6f}", traf.alt[i],
-                                     traf.tas[i], MODES[int(self.mode[i])], self.power[i],
+                                     traf.tas[i], M.MODES[int(self.mode[i])], self.power[i],
                                      self.used_wh[i], self.soc[i]])
 
     def event(self, i, name, info=""):
         """Write one event of drone i (index) with its state at that moment. SoC and energy come straight from
-        ENERGY when it is loaded (decision 06-11-2026): the energy per phase between two events is then at most one
-        ENERGY step (1 s) old; before, from the copy that FLIGHTLOG makes once per second, which could be older."""
+        ENERGY when it is loaded, so the energy per phase between two events is at most one ENERGY step (1 s) old."""
         energy = energy_plugin()
         # live only while ENERGY's arrays line up with ours: while BlueSky deletes drones, ENERGY may already have
         # removed them (its index i is then another drone), and the copy is used, as before
@@ -165,7 +161,7 @@ class FlightLog(core.Entity):
         soc = energy.soc[i] if live else self.soc[i]
         used = energy.used_wh[i] if live else self.used_wh[i]
         self.write("events", [sim.simt, traf.id[i], name, info,
-                              MODES[int(self.mode[i])], traf.tas[i], traf.alt[i], soc, used])
+                              M.MODES[int(self.mode[i])], traf.tas[i], traf.alt[i], soc, used])
 
     def end_episode(self, i):
         """End of a LoS episode of drone i: event los_end with its severity; keep the highest per drone."""
@@ -191,8 +187,7 @@ class FlightLog(core.Entity):
 
     def write(self, kind, values):
         """One CSV line: floats with 4 decimals, the rest as text. Text with a comma or a quote is put between
-        quotes (standard CSV), so that it stays one column (decision 05-11-2026: event infos such as
-        "arrival 64.4 s, waited 0.1 s at gate" from TRAFFIC split into two columns and broke run_report)."""
+        quotes (standard CSV), so that it stays one column."""
         def cell(v):
             if isinstance(v, float):
                 return f"{v:.4f}"
@@ -218,7 +213,7 @@ class FlightLog(core.Entity):
         return True, f"Flight log: {folder} ({', '.join(kinds)})"
 
     def run_info(self, **info):
-        """Write the settings of this run to run.json in the run folder (decision 06-11-2026). Called by TRAFFIC
+        """Write the settings of this run to run.json in the run folder. Called by TRAFFIC
         when it starts; nothing happens when no flight log is open."""
         if self.files and self.folder:
             with open(os.path.join(self.folder, "run.json"), "w") as f:
