@@ -27,7 +27,8 @@ De map `experimenten` moet naast `bluesky` staan (in `afstuderen/`), of zet de o
 ## Commando's
 
 ```
-VPMS SHOW | SHARED | SPEED | TARGET s | OFFSET m | LEG m | RING ON/OFF | HORIZON s
+VPMS SHOW | SHARED | SPEED | TARGET s | OFFSET m | LEG m | RING ON/OFF | RESTART ON/OFF | HORIZON s
+(LEG zet ook de horizon die erbij hoort; geef HORIZON daarna. RESTART: G2, een hoverende L+C vliegt alsnog door)
 TRAFFIC vraag seed [fout_%] [BASE|LONG] [warmup_s] [meet_s]        TRAFFIC VIDEO ON|OFF
 FLIGHTLOG naam [TRACE]
 SOC drone [waarde]
@@ -41,6 +42,7 @@ python plugins/thesis/tests/test_flightlog.py
 python plugins/thesis/tests/test_together.py
 python plugins/thesis/tests/test_vpms.py shared 0 60                    # variant, fout %, vraag/h
 python plugins/thesis/tests/test_vpms.py speed 0 90 40 300 1800 OFF     # + target, warm-up, meten, ring
+python plugins/thesis/tests/test_vpms.py speed 0 90 40 300 1800 ON ON   # + herstart vanuit hover (G2), standaard OFF
 ```
 
 Elke test print de uitkomst naast wat je mag verwachten. De ontwerpchecks van de hele structuur:

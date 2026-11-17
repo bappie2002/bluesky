@@ -10,7 +10,9 @@ an odd number of transitions for every L+C created on its wing (decision 09-11-2
 Block 22 (decisions 13-11-2026): drones created within 32 m of another (expected 0); leaders that make room, per
 type, and their highest speed (MC at most 11.18, L+C at most 15.4 m/s); keep flying of the L+C (ring: started,
 joined the opposite arc, refused with the reasons); the arc check also on the ring. Extra argument: ON or OFF for
-the ring (default ON):  python plugins/thesis/tests/test_vpms.py shared 0 60 40 300 600 OFF """
+the ring (default ON):  python plugins/thesis/tests/test_vpms.py shared 0 60 40 300 600 OFF
+Block 24 (G2): one more argument, ON or OFF for the restart from hover (default OFF), and its count:
+    python plugins/thesis/tests/test_vpms.py speed 0 90 40 300 1800 ON ON """
 import os, sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, ROOT); os.chdir(ROOT)
@@ -24,10 +26,11 @@ target = sys.argv[4] if len(sys.argv) > 4 else "40"
 warmup = sys.argv[5] if len(sys.argv) > 5 else "300"
 measure = sys.argv[6] if len(sys.argv) > 6 else "600"
 ring = sys.argv[7] if len(sys.argv) > 7 else "ON"
+restart = sys.argv[8] if len(sys.argv) > 8 else "OFF"
 bs.init(mode="sim", detached=True)
 for cmd in ["DT 0.5", "PLUGINS LOAD ENERGY", "PLUGINS LOAD FLIGHTLOG", "PLUGINS LOAD VPMS",
             "PLUGINS LOAD TRAFFIC", f"VPMS {variant}", f"VPMS TARGET {target}", f"VPMS RING {ring}",
-            f"FLIGHTLOG vpms_{variant}",
+            f"VPMS RESTART {restart}", f"FLIGHTLOG vpms_{variant}",
             f"TRAFFIC {demand} 1 {eta} BASE {warmup} {measure}"]:
     bs.stack.stack(cmd)
 bs.sim.step()
@@ -167,6 +170,9 @@ for info in refused:
     kinds[k] = kinds.get(k, 0) + 1
 for k, c in sorted(kinds.items(), key=lambda kv: -kv[1]):
     print(f"   refused: {k}: {c}")
+if M.RESTART_ON:                                                   # block 24, G2
+    n_rs = sum(1 for _, _, e, _ in rl if e == "restart")
+    print(f"Restart from hover (G2, on): {n_rs} times by {len({a for _, a, e, _ in rl if e == 'restart'})} L+C")
 
 for typ, (vmax, vsmin, vsmax, axmax, hmax) in sorted(perf_seen.items()):
     print(f"BlueSky limits {typ}: speed max {vmax:.1f} m/s, vertical {vsmin:.1f} to {vsmax:.1f} m/s, "

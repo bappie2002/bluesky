@@ -152,7 +152,8 @@ class Traffic(core.Entity):
         stack.stack("OP")
         n, n_lc = len(self.plan["time"]), int(self.plan["is_lc"].sum())
         rule = (f"gate rule {M.SEP_H / M.V_ENTRY[0]:.2f} s behind an MC, {M.SEP_H / M.V_ENTRY[1]:.2f} s behind "
-                f"an L+C; ring {'on' if M.RING_ON else 'off'}; announcement {M.H_ANNOUNCE:g} s" if vpms is not None else "no gate rule")
+                f"an L+C; ring {'on' if M.RING_ON else 'off'}; restart {'on' if M.RESTART_ON else 'off'}; "
+                f"announcement {M.H_ANNOUNCE:g} s" if vpms is not None else "no gate rule")
         fl = plugin("flightlog", "FlightLog")
         if fl is not None and vpms is not None:         # settings of this run for the analysis
             fl.run_info(variant=M.VARIANT, target=M.T_TARGET, design=M.T_DESIGN, k_spacing=M.K_SPACING,
@@ -162,7 +163,8 @@ class Traffic(core.Entity):
                         demand=demand, seed=int(seed), eta_pct=float(eta), pad=pad.upper(),
                         warmup=float(warmup), measure=float(measure), arrivals=n, arrivals_lc=n_lc,
                         t0=float(sim.simt),   # simulation time of the start: measured hour = t0 + warmup ...
-                        ring=bool(M.RING_ON), horizon=float(M.H_ANNOUNCE), v_mc_max=float(M.V_MC_MAX),
+                        ring=bool(M.RING_ON), restart=bool(M.RESTART_ON),   # G2 (block 24)
+                        horizon=float(M.H_ANNOUNCE), v_mc_max=float(M.V_MC_MAX),
                         turn_mc=float(M.turn_lookahead(False)), turn_lc=float(M.turn_lookahead(True)),
                         gate_rule="per gate SEP_H / V_ENTRY of the previous drone")
         return True, (f"TRAFFIC: {n} arrivals ({n_lc} L+C) in {warmup + measure:.0f} s, "
