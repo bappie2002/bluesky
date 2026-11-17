@@ -15,8 +15,9 @@ Structure (all numbers and the geometry in experimenten/config/model.py)
 Flight of a drone (state per drone)
   ENTRY   gate -> fixed turn onto its arc, level, at V_ENTRY.
   ARC     the fixed turn (turn_geom), then along the arc at V_ARC.
-  RING    (L+C only) flying on through the 30 deg gap to the arc of the opposite gate.
-  HOLD    hover at the end of the arc while not cleared (with RESTART ON an L+C flies on from there, G2).
+  RING    flying on through the 30 deg gap to the arc of the opposite gate (the L+C; with RINGMC ON also the MC).
+  HOLD    hover at the end of the arc while not cleared (with RESTART ON a drone that may keep flying flies on from
+          there, G2).
   DIRECT  cleared: straight to the merge point at V_DIRECT, along a planned descent (plan_descent), arriving in hover.
   FINAL   vertical descent, 2 m/s to 5 m and 0.5 m/s below, never within K_SPACING x SEP_V above another drone.
   PAD     on the pad for its pad time, then deleted.
@@ -30,13 +31,15 @@ Rules of the structure (codes of the methodology and the Keuzes-Excel)
   - Gentle braking: a drone with an L+C behind it in its lane brakes with the deceleration of the L+C (lc_like).
   - P-16 fixed turn: every drone turns from its entry leg onto its arc along one circle per lane, TURN_MARGIN x the
     turn radius at the highest speed of the lane (MC lanes 34.2 m, L+C and shared lanes 64.8 m).
-  - P-18 keep flying (RING_ON): an L+C that is not cleared where it would start braking for the end of its arc flies
-    on to the arc of the opposite gate if ring_check allows it; otherwise it brakes and hovers.
-  - G2 restart (RESTART_ON, block 24): an L+C that hovers at the end of its arc checks every update whether it may fly
-    on from there (ring_check, timed from hover) and does so, unless its clearance is expected within T_RESTART_MIN.
-    Off in the main runs: from hover it needs longer to the junction than the announcement horizon covers, so it can
-    miss a drone that is not announced yet (restart_check 16-11: 1 LoS in 120 runs; see BESLUITEN.md).
-  - Announcement: VPMS may look H_ANNOUNCE (19 s at the entry leg of 100 m) ahead in the list of arrivals from TRAFFIC (announced).
+  - P-18 keep flying (RING_ON; M.may_ring): an L+C (with RING_MC also a multicopter, block 27) that is not cleared
+    where it would start braking for the end of its arc flies on to the arc of the opposite gate if ring_check allows
+    it; otherwise it brakes and hovers.
+  - G2 restart (RESTART_ON, on since block 27): a drone that may keep flying and hovers at the end of its arc checks
+    every update whether it may fly on from there (ring_check, timed from hover) and does so, unless its clearance is
+    expected within T_RESTART_MIN.
+  - Announcement: VPMS may look H_ANNOUNCE ahead in the list of arrivals from TRAFFIC (announced): computed by
+    M.announce_horizon from the ring flights that are on (23 s with ring and restart, 42 s with RINGMC), unless set
+    with VPMS HORIZON.
   - Clearance: FCFS in the order of passing the gate, T_TARGET (40 s) apart at the merge point, given when the first
     drone is on its arc (next_clearance). Its arrival is predicted by flying the direct leg ahead (predict_time).
     A clearance waits where no conflict-free descent exists (no-go zone).
@@ -45,8 +48,9 @@ Rules of the structure (codes of the methodology and the Keuzes-Excel)
 
 TRAFFIC hands drones over (register); other drones are ignored. Events for FLIGHTLOG: arc_in, hold, ring, ring_join,
 ring_refused, restart, speedup, speedup_end, nogo, nogo_hold, direct_to, merge, touchdown.
-Commands (all before the traffic starts; VPMS LEG also sets the horizon that belongs to it, so give HORIZON after LEG):
-  VPMS SHOW | SHARED | SPEED | TARGET s | OFFSET m | LEG m | RING ON/OFF | RESTART ON/OFF | HORIZON s
+Commands (all before the traffic starts; LEG, RING, RINGMC and RESTART compute the horizon again unless HORIZON s set
+it; HORIZON -1 computes it again):
+  VPMS SHOW | SHARED | SPEED | TARGET s | OFFSET m | LEG m | RING ON/OFF | RINGMC ON/OFF | RESTART ON/OFF | HORIZON s
 This file only steers the drones; every number and formula is in experimenten/config/model.py (imported as M).
 Why each choice was made, and what it replaced: experimenten/docs/BESLUITEN.md.
 """
@@ -298,31 +302,34 @@ class Vpms(core.Entity):
         return restore
 
     def ring_check(self, i, x, y, progress, idx, now, d_own, v0=None):
-        """Keep flying (P-18): may L+C i, which would start braking for the end of its arc now, fly on to the arc of the
-        gate opposite (True, '') or not (False, reason)? Not with a multicopter or a hold in that lane; not when another
-        drone (on its entry leg, on that arc or announced) can be at the junction, or in the speed variant on the MC
-        entry line it crosses, within GAP_MIN at wing speed plus T_RING_MARGIN, between its fastest and slowest time.
-        v0: its speed now when it starts from (nearly) standing still (G2 restart): its times then include speeding up
-        at A_ACC; None: it flies at wing speed (P-18)."""
+        """Keep flying (P-18): may drone i, which would start braking for the end of its arc now, fly on to the arc of the
+        gate opposite (True, '') or not (False, reason)? Not with a hold in that lane, nor for an L+C with a multicopter
+        in it; not when another drone (on its entry leg, on that arc or announced) can be at the junction within GAP_MIN
+        at the waiting speed of drone i plus T_RING_MARGIN, between its fastest and slowest time; for an L+C in the speed
+        variant also not on the MC entry line it crosses. A multicopter (RING_MC, block 27) uses its own arc and speed;
+        its ring gap crosses no entry line (speed variant: inside the L+C arcs). v0: its speed now when it starts from
+        (nearly) standing still (G2 restart): its times then include speeding up at A_ACC; None: at its arc speed."""
         g = int(self.gate[i])
         g2 = (g + 2) % len(M.GATE_BEARINGS)
-        r, v_r = M.arc_radius(True), M.V_ARC[1]
-        key2 = M.arc_key(g2, True)
+        lc_i = bool(self.is_lc[i])
+        r, v_r = M.arc_radius(lc_i), M.V_ARC[int(lc_i)]
+        key2 = M.arc_key(g2, lc_i)
         def ahead(d):                                                       # s to fly d m from here
-            return d / v_r if v0 is None else M.travel_time(d, v0, v_r, M.A_ACC[1])
+            return d / v_r if v0 is None else M.travel_time(d, v0, v_r, M.A_ACC[int(lc_i)])
         t_j = now + ahead(d_own + r * np.radians(180.0 - M.ARC_DEG))         # at the start of the opposite arc
         w = M.GAP_MIN / v_r + M.T_RING_MARGIN
         for j in idx:
             if j == i or self.state[j] not in M.WAITING or M.arc_key(self.gate[j], self.is_lc[j]) != key2:
                 continue
-            if not self.is_lc[j]:
+            if lc_i and not self.is_lc[j]:
                 return False, f"multicopter {traf.id[j]} in the lane of gate {g2}"
             if self.state[j] == M.HOLD:
                 return False, f"{traf.id[j]} holds in the lane of gate {g2}"
             if self.state[j] == M.ENTRY:
-                tx, ty = M.arc_start(g2, True)
+                tx, ty = M.arc_start(g2, lc_i)
                 d = float(np.hypot(tx - x[j], ty - y[j]))
-                t_lo, t_hi = now + d / M.V_MAX[1], now + d / max(float(traf.tas[j]), 1.0)
+                t_lo = now + d / M.V_MAX[int(self.is_lc[j])]
+                t_hi = now + d / max(float(traf.tas[j]), 1.0)
                 if t_lo - w < t_j < t_hi + w:
                     return False, f"{traf.id[j]} reaches the junction in {t_lo - now:.0f}-{t_hi - now:.0f} s, ring {t_j - now:.0f} s"
             elif self.state[j] == M.ARC:
@@ -331,16 +338,16 @@ class Vpms(core.Entity):
                     return False, f"{traf.id[j]} only {s_k:.0f} m into the arc of gate {g2} at the junction"
         leg = {lc: M.gate_distance() - M.arc_start_along(lc) for lc in (False, True)}
         for t_a, lc_a in self.announced(now, gate=g2):
-            if M.VARIANT == "speed" and not lc_a:
-                continue                                           # its own lane; see the MC line below
-            if not lc_a:                                           # shared: an MC would be ahead of it or too close
+            if M.VARIANT == "speed" and lc_a != lc_i:
+                continue                                           # another lane (L+C: the MC line below)
+            if lc_i and not lc_a:                                  # shared: an MC would be ahead of it or too close
                 if t_a + leg[False] / M.V_MAX[0] < t_j + w:
                     return False, f"multicopter announced at gate {g2} in {t_a - now:.0f} s"
                 continue
-            t_lo, t_hi = t_a + leg[True] / M.V_MAX[1], t_a + leg[True] / M.V_ENTRY[1]
+            t_lo, t_hi = t_a + leg[lc_a] / M.V_MAX[int(lc_a)], t_a + leg[lc_a] / M.V_ENTRY[int(lc_a)]
             if t_lo - w < t_j < t_hi + w:
-                return False, f"L+C announced at gate {g2} in {t_a - now:.0f} s"
-        if M.VARIANT == "speed":                                     # it crosses the MC entry line of gate g2
+                return False, f"{'L+C' if lc_a else 'multicopter'} announced at gate {g2} in {t_a - now:.0f} s"
+        if M.VARIANT == "speed" and lc_i:                            # it crosses the MC entry line of gate g2
             along_c = np.sqrt(max(r ** 2 - M.lateral(False) ** 2, 0.0))
             bx, by = M.offset_xy(g2, False, along_c)
             end = M.arc_start_bearing(g, True) + M.ARC_DIR * M.ARC_DEG
@@ -370,7 +377,7 @@ class Vpms(core.Entity):
         return True, ""
 
     def restart_check(self, i, x, y, dist, progress, idx, now):
-        """G2 (block 24): may L+C i, hovering at the end of its arc, fly on to the arc opposite now (True, '') or not
+        """G2 (block 24): may drone i, hovering at the end of its arc, fly on to the arc opposite now (True, '') or not
         (False, reason)? Not when its clearance is expected within T_RESTART_MIN: its slot at the merge point is at
         least (its place in the FCFS order + 1) x T_TARGET after the last one, minus its predicted direct leg from here
         (as clear_next); otherwise ring_check with the times of speeding up from hover."""
@@ -524,7 +531,8 @@ class Vpms(core.Entity):
 
     def fly_arcs(self, idx, now, x, y, dist, brg, progress, restore):
         """2. Arcs: the fixed turn, then along the circle; no overtaking. An L+C that is not cleared decides where it would
-        start braking for the end of its arc whether it flies on (RING, P-18) or brakes and hovers (HOLD)."""
+        start braking for the end of its arc whether it flies on (RING, P-18) or brakes and hovers (HOLD); with RING_MC a
+        multicopter too (block 27)."""
         on_arc = idx[np.isin(self.state[idx], (M.ARC, M.HOLD, M.RING))]
         lanes_now = {}                                         # lanes fixed at the start of the update: a drone that
         for i in on_arc:                                       # joins the opposite lane now belongs there next update
@@ -542,13 +550,13 @@ class Vpms(core.Entity):
                     self.ring_log.append((now, traf.id[i], "ring_join", f"gate {g_old} -> {self.gate[i]}"))
                     self.event(i, "ring_join", f"gate {g_old} -> {self.gate[i]}")
                     continue
-                if (M.RING_ON and lc and self.state[i] == M.ARC and self.ring_go[i] == 0
-                        and d_own <= traf.tas[i] ** 2 / (2 * M.A_DECEL[lc]) + traf.tas[i] * M.DT + 2.0):
+                if (M.may_ring(lc) and self.state[i] == M.ARC and self.ring_go[i] == 0
+                        and d_own <= traf.tas[i] ** 2 / (2 * self.a_dec(i)) + traf.tas[i] * M.DT + 2.0):
                     lead_holds = rank > 0 and (self.state[members[rank - 1]] == M.HOLD
                                                or self.ring_go[members[rank - 1]] == -1)
                     if lead_holds:
                         ok, why = False, f"{traf.id[members[rank - 1]]} ahead holds"
-                    elif traf.tas[i] < M.V_ARC[1] - 0.5:
+                    elif traf.tas[i] < M.V_ARC[lc] - 0.5:
                         ok, why = False, f"already braking ({traf.tas[i]:.1f} m/s)"
                     else:
                         ok, why = self.ring_check(i, x, y, progress, idx, now, d_own)
@@ -570,7 +578,7 @@ class Vpms(core.Entity):
                         self.event(i, "hold")
                         if self.speedup[i]:
                             self.set_speedup(i, False, "hold")
-                if self.state[i] == M.HOLD and M.RESTART_ON and M.RING_ON and lc:      # G2 restart
+                if self.state[i] == M.HOLD and M.RESTART_ON and M.may_ring(lc):      # G2 restart
                     ok, _ = self.restart_check(i, x, y, dist, progress, idx, now)
                     if ok:
                         self.state[i], self.ring_go[i] = M.RING, 1
@@ -723,30 +731,39 @@ class Vpms(core.Entity):
     # ------------------------------------------------------------------ command
     @stack.command(name="VPMS")
     def command(self, what: str = "SHOW", value: str = "0"):
-        """VPMS [SHOW | SHARED | SPEED | TARGET s | OFFSET m | LEG m | RING ON/OFF | RESTART ON/OFF | HORIZON s]: draw the
-        structure, choose the arc variant, the target separation (s), the side offset of the entry points (m, speed
-        variant; -1 = computed), the length of the entry leg (m; also sets the horizon that belongs to it), keep flying
-        on or off, the restart from hover (G2) on or off, or the announcement horizon (s). All before the traffic
-        starts."""
+        """VPMS [SHOW | SHARED | SPEED | TARGET s | OFFSET m | LEG m | RING ON/OFF | RINGMC ON/OFF | RESTART ON/OFF |
+        HORIZON s]: draw the structure, choose the arc variant, the target separation (s), the side offset of the entry
+        points (m, speed variant; -1 = computed), the length of the entry leg (m), keep flying on or off (every type),
+        keep flying for the multicopter too, the restart from hover (G2) on or off, or the announcement horizon (s;
+        -1 = computed). LEG, RING, RINGMC and RESTART compute the horizon again (M.announce_horizon) unless HORIZON s
+        set it. All before the traffic starts."""
         what = what.upper()
+        def horizon():
+            if not M.H_SET:
+                M.H_ANNOUNCE = M.announce_horizon()
+            return f"; announcement horizon {M.H_ANNOUNCE:g} s{' (set)' if M.H_SET else ''}"
+        def on(v):
+            return str(v).upper() not in ("OFF", "0", "FALSE", "NO")
         if what == "RING":
-            M.RING_ON = str(value).upper() not in ("OFF", "0", "FALSE", "NO")
-            return True, f"VPMS keep flying for the L+C (ring): {'on' if M.RING_ON else 'off'}"
+            M.RING_ON = on(value)
+            return True, f"VPMS keep flying (ring): {'on' if M.RING_ON else 'off'}" + horizon()
+        if what == "RINGMC":
+            M.RING_MC = on(value)
+            return True, f"VPMS keep flying for the multicopter too: {'on' if M.RING_MC else 'off'}" + horizon()
         if what == "RESTART":
-            M.RESTART_ON = str(value).upper() not in ("OFF", "0", "FALSE", "NO")
-            return True, f"VPMS restart from hover for the L+C (G2): {'on' if M.RESTART_ON else 'off'}"
+            M.RESTART_ON = on(value)
+            return True, f"VPMS restart from hover (G2): {'on' if M.RESTART_ON else 'off'}" + horizon()
         try:
             value = float(value)
         except ValueError:
             return False, f"VPMS {what}: number expected, got {value}"
-        if what == "HORIZON" and value >= 0:
-            M.H_ANNOUNCE = float(value)
-            return True, f"VPMS announcement horizon {M.H_ANNOUNCE:g} s"
+        if what == "HORIZON":
+            M.H_SET = value >= 0
+            M.H_ANNOUNCE = float(value) if M.H_SET else M.announce_horizon()
+            return True, f"VPMS announcement horizon {M.H_ANNOUNCE:g} s ({'set' if M.H_SET else 'computed'})"
         if what == "LEG" and value > 0:
             M.ENTRY_LEG = float(value)
-            M.H_ANNOUNCE = M.announce_horizon()
-            return True, (f"VPMS entry leg {M.ENTRY_LEG:g} m: gates at {M.gate_distance():.0f} m; "
-                          f"announcement horizon {M.H_ANNOUNCE:g} s")
+            return True, f"VPMS entry leg {M.ENTRY_LEG:g} m: gates at {M.gate_distance():.0f} m" + horizon()
         if what == "OFFSET":
             M.ENTRY_OFFSET = None if value < 0 else float(value)
             return True, (f"VPMS entry offset {M.entry_offset():.1f} m per side ({2 * M.entry_offset():.0f} m apart; "

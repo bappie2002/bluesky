@@ -2,14 +2,16 @@
 
   - Draws all arrivals of the run at the start (model.draw): per gate a shifted exponential with the transit minimum
     SEP_H / V_ENTRY of the previous drone as the smallest gap; types, state of charge, pad time and prediction error
-    from their own random streams, so every case gets the same drones for the same (demand, seed).
+    from their own random streams, so every case gets the same drones for the same (demand, seed). Gate share: gate 0
+    gets this share of the demand, the other three the rest equally (block 27; 0.25 = every gate the same). Share of
+    L+C in the fleet: SHARE_LC (0.5) unless given (block 27, fleet mix).
   - Gives VPMS the list of arrival times (it may look H_ANNOUNCE ahead in it).
   - Creates every drone at its entry speed at the first update after its drawn time, placed where it is at that update;
     counts a drone created within SEP_H of another (VPMS close_entries, event entry_close; expected 0).
   - Stops (HOLD) when every drone of the measured window has landed.
   - Video mode (TRAFFIC VIDEO ON/OFF, only for the GUI): announced drones as ghost drones AN#### flying to their gate.
 Every number and formula: experimenten/config/model.py (imported as M). Commands:
-  TRAFFIC demand seed [eta_err_pct] [BASE|LONG] [warmup_s] [measure_s]     e.g. TRAFFIC 60 1
+  TRAFFIC demand seed [eta_err_pct] [BASE|LONG] [warmup_s] [measure_s] [gate_share] [share_lc]     e.g. TRAFFIC 60 1
   TRAFFIC VIDEO ON|OFF
 (File name thesis_traffic.py: 'traffic' is already a BlueSky module.)
 """
@@ -135,15 +137,24 @@ class Traffic(core.Entity):
 
     @stack.command(name="TRAFFIC")
     def start(self, demand: str, seed: str = "1", eta: float = 0.0, pad: str = "BASE",
-              warmup: float = M.WARMUP, measure: float = M.MEASURE):
-        """TRAFFIC demand seed [eta_err_pct] [BASE|LONG] [warmup_s] [measure_s], or TRAFFIC VIDEO ON|OFF"""
+              warmup: float = M.WARMUP, measure: float = M.MEASURE, gate_share: float = 0.25,
+              share_lc: float = M.SHARE_LC):
+        """TRAFFIC demand seed [eta_err_pct] [BASE|LONG] [warmup_s] [measure_s] [gate_share] [share_lc], or
+        TRAFFIC VIDEO ON|OFF"""
         if demand.upper() == "VIDEO":
             self.video = str(seed).upper() not in ("OFF", "0")
             return True, f"TRAFFIC video mode {'on: announced drones shown as ghosts AN####' if self.video else 'off'}"
         demand = float(demand)
         self.warmup, self.measure = warmup, measure
         vpms = plugin("vpms", "Vpms")
-        self.plan = M.draw(demand, int(seed), warmup + measure, pad, eta, M.V_ENTRY, M.SEP_H)
+        try:
+            shares = M.gate_shares(float(gate_share), len(M.GATE_BEARINGS))
+        except ValueError as e:
+            return False, f"TRAFFIC: {e}"
+        if not 0.0 <= float(share_lc) <= 1.0:
+            return False, f"TRAFFIC: share of L+C must be between 0 and 1, got {share_lc}"
+        self.plan = M.draw(demand, int(seed), warmup + measure, pad, eta, M.V_ENTRY, M.SEP_H,
+                           gate_share=float(gate_share), share_lc=float(share_lc))
         self.t0, self.next, self.waiting, self.measured, self.done = sim.simt, 0, [], set(), False
         p = self.plan
         if vpms is not None:                            # the list of arrivals for VPMS
@@ -152,8 +163,10 @@ class Traffic(core.Entity):
         stack.stack("OP")
         n, n_lc = len(self.plan["time"]), int(self.plan["is_lc"].sum())
         rule = (f"gate rule {M.SEP_H / M.V_ENTRY[0]:.2f} s behind an MC, {M.SEP_H / M.V_ENTRY[1]:.2f} s behind "
-                f"an L+C; ring {'on' if M.RING_ON else 'off'}; restart {'on' if M.RESTART_ON else 'off'}; "
-                f"announcement {M.H_ANNOUNCE:g} s" if vpms is not None else "no gate rule")
+                f"an L+C; ring {'on' if M.RING_ON else 'off'}{' (also MC)' if M.RING_MC else ''}; "
+                f"restart {'on' if M.RESTART_ON else 'off'}; announcement {M.H_ANNOUNCE:g} s"
+                f"{' (set)' if M.H_SET else ''}; gate shares " + "/".join(f"{100 * q:.0f}" for q in shares)
+                if vpms is not None else "no gate rule")
         fl = plugin("flightlog", "FlightLog")
         if fl is not None and vpms is not None:         # settings of this run for the analysis
             fl.run_info(variant=M.VARIANT, target=M.T_TARGET, design=M.T_DESIGN, k_spacing=M.K_SPACING,
@@ -164,7 +177,8 @@ class Traffic(core.Entity):
                         warmup=float(warmup), measure=float(measure), arrivals=n, arrivals_lc=n_lc,
                         t0=float(sim.simt),   # simulation time of the start: measured hour = t0 + warmup ...
                         ring=bool(M.RING_ON), restart=bool(M.RESTART_ON),   # G2 (block 24)
-                        horizon=float(M.H_ANNOUNCE), v_mc_max=float(M.V_MC_MAX),
+                        ring_mc=bool(M.RING_MC), gate_share=float(shares[0]), share_lc=float(share_lc),   # block 27
+                        horizon=float(M.H_ANNOUNCE), horizon_set=bool(M.H_SET), v_mc_max=float(M.V_MC_MAX),
                         turn_mc=float(M.turn_lookahead(False)), turn_lc=float(M.turn_lookahead(True)),
                         gate_rule="per gate SEP_H / V_ENTRY of the previous drone")
         return True, (f"TRAFFIC: {n} arrivals ({n_lc} L+C) in {warmup + measure:.0f} s, "

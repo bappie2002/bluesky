@@ -11,8 +11,11 @@ Block 22 (decisions 13-11-2026): drones created within 32 m of another (expected
 type, and their highest speed (MC at most 11.18, L+C at most 15.4 m/s); keep flying of the L+C (ring: started,
 joined the opposite arc, refused with the reasons); the arc check also on the ring. Extra argument: ON or OFF for
 the ring (default ON):  python plugins/thesis/tests/test_vpms.py shared 0 60 40 300 600 OFF
-Block 24 (G2): one more argument, ON or OFF for the restart from hover (default OFF), and its count:
-    python plugins/thesis/tests/test_vpms.py speed 0 90 40 300 1800 ON ON """
+Block 24 (G2): one more argument, ON or OFF for the restart from hover (default ON since block 27; OFF before), and its
+count:  python plugins/thesis/tests/test_vpms.py speed 0 90 40 300 1800 ON OFF
+Block 27: one more, ON or OFF for keep flying of the multicopter too (RINGMC, default OFF); ring and restart counted per
+type, refusals per reason (as analysis/delays.py), and the announcement horizon VPMS computed:
+    python plugins/thesis/tests/test_vpms.py shared 0 90 40 300 1800 ON ON ON """
 import os, sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, ROOT); os.chdir(ROOT)
@@ -26,11 +29,12 @@ target = sys.argv[4] if len(sys.argv) > 4 else "40"
 warmup = sys.argv[5] if len(sys.argv) > 5 else "300"
 measure = sys.argv[6] if len(sys.argv) > 6 else "600"
 ring = sys.argv[7] if len(sys.argv) > 7 else "ON"
-restart = sys.argv[8] if len(sys.argv) > 8 else "OFF"
+restart = sys.argv[8] if len(sys.argv) > 8 else "ON"
+ringmc = sys.argv[9] if len(sys.argv) > 9 else "OFF"
 bs.init(mode="sim", detached=True)
 for cmd in ["DT 0.5", "PLUGINS LOAD ENERGY", "PLUGINS LOAD FLIGHTLOG", "PLUGINS LOAD VPMS",
             "PLUGINS LOAD TRAFFIC", f"VPMS {variant}", f"VPMS TARGET {target}", f"VPMS RING {ring}",
-            f"VPMS RESTART {restart}", f"FLIGHTLOG vpms_{variant}",
+            f"VPMS RINGMC {ringmc}", f"VPMS RESTART {restart}", f"FLIGHTLOG vpms_{variant}",
             f"TRAFFIC {demand} 1 {eta} BASE {warmup} {measure}"]:
     bs.stack.stack(cmd)
 bs.sim.step()
@@ -53,7 +57,9 @@ prev_alt, vs_fast, vrs_steps, merge_dev, seen_final = {}, 0.0, 0, 0.0, set()   #
 print(f"Entry offset {M.entry_offset():.1f} m per side (speed variant; computed {M.entry_offset_min():.1f} m); "
       f"lane gap {M.GAP_MIN:.0f} m; arcs at {M.H_ARC[0]:.2f} / {M.H_ARC[1]:.2f} m; gate rule "
       f"{M.SEP_H / M.V_ENTRY[0]:.2f} s behind an MC, {M.SEP_H / M.V_ENTRY[1]:.2f} s behind an L+C; fixed turn radius "
-      f"MC lane {M.turn_radius(False):.1f} m, L+C lane {M.turn_radius(True):.1f} m; ring {'on' if M.RING_ON else 'off'}")
+      f"MC lane {M.turn_radius(False):.1f} m, L+C lane {M.turn_radius(True):.1f} m; ring {'on' if M.RING_ON else 'off'}"
+      f"{' (also MC)' if M.RING_MC else ''}, restart {'on' if M.RESTART_ON else 'off'}; announcement horizon "
+      f"{M.H_ANNOUNCE:g} s")
 v_type_max = [0.0, 0.0]                # highest speed of a leader that makes room, per type (block 22)
 cleared_at = {}                        # acid -> time of its go (FCFS order check, decision 06-11-2026)
 prev_tas, acc_seen, dec_seen = {}, [0.0, 0.0], [0.0, 0.0]   # observed acceleration per type (09-11-2026)
@@ -98,7 +104,7 @@ while bs.sim.simt < float(warmup) + float(measure) + 3000 and not sc.done:
         los_pairs.add(pair)
     prog_all = {}
     for i in range(n):
-        if vp.state[i] in (M.ARC, M.HOLD, M.RING_ON):
+        if vp.state[i] in (M.ARC, M.HOLD, M.RING):          # block 27: M.RING (was M.RING_ON, = ENTRY)
             p_ = (np.degrees(np.arctan2(x[i], y[i])) - M.arc_start_bearing(vp.gate[i], vp.is_lc[i])) % 360
             prog_all[i] = 0.0 if p_ > 300 else p_
         try:
@@ -107,7 +113,7 @@ while bs.sim.simt < float(warmup) + float(measure) + 3000 and not sc.done:
         except (AttributeError, IndexError):
             pass
     for i in range(n):
-        if vp.state[i] in (M.ARC, M.RING_ON):
+        if vp.state[i] in (M.ARC, M.RING):                  # the arc check also on the ring (block 27: was M.RING_ON)
             err = np.hypot(x[i], y[i]) - M.arc_radius(vp.is_lc[i])        # + outside, - inside
             prog = (np.degrees(np.arctan2(x[i], y[i])) - M.arc_start_bearing(vp.gate[i], vp.is_lc[i])) % 360
             prog = 0.0 if prog > 300 else prog
@@ -157,22 +163,28 @@ print(f"Leaders that made room for an L+C (P-17): {len(sped_up)} drones, {len(vp
       f"{n_ann} for an announced L+C); fastest MC {v_type_max[0]:.2f} m/s (at most {M.V_MC_MAX:.2f}), "
       f"L+C {v_type_max[1]:.2f} m/s (at most {M.V_LC_MAX})")
 rl = vp.ring_log
-n_ring = len({a for _, a, e, _ in rl if e == "ring"})
+n_ring = {t: len({a for _, a, e, _ in rl if e == "ring" and a.startswith(t)}) for t in ("LC", "MC")}
 n_join = sum(1 for _, _, e, _ in rl if e == "ring_join")
-refused = [info for _, _, e, info in rl if e == "ring_refused"]
-print(f"Keep flying (ring, P-18, {'on' if M.RING_ON else 'off'}): {n_ring} L+C flew on, {n_join} times onto the opposite arc; "
-      f"refused {len(refused)} times")
+refused = [(a, info) for _, a, e, info in rl if e == "ring_refused"]
+print(f"Keep flying (ring, P-18, {'on' if M.RING_ON else 'off'}{', also MC' if M.RING_MC else ''}): {n_ring['LC']} L+C "
+      f"and {n_ring['MC']} MC flew on, {n_join} times onto the opposite arc; refused {len(refused)} times "
+      f"({sum(1 for a, _ in refused if a.startswith('MC'))} by an MC)")
+REASONS = [("drone ahead holds", "ahead holds"), ("already braking", "already braking"),
+           ("multicopter on the entry line it crosses", "entry line"), ("multicopter on the entry line it crosses", "crosses in"),
+           ("multicopter in the lane", "in the lane of gate"), ("holds in the opposite lane", "holds in the lane"),
+           ("drone on its entry leg at the junction", "reaches the junction"), ("drone too early on the arc", "into the arc"),
+           ("drone announced at that gate", "announced at gate")]      # the order of analysis/delays.py RING_REASONS
 kinds = {}
-for info in refused:
-    k = ("drone ahead holds" if "ahead holds" in info else "multicopter in the lane" if "multicopter" in info and "lane" in info
-         else "multicopter announced or on its entry line" if "multicopter" in info else "holds in the opposite lane"
-         if "holds in the lane" in info else "already braking" if "braking" in info else "L+C at the junction")
+for _, info in refused:
+    k = next((name for name, part in REASONS if part in info
+              and not (name == "multicopter in the lane" and not info.startswith("multicopter"))), "other")
     kinds[k] = kinds.get(k, 0) + 1
 for k, c in sorted(kinds.items(), key=lambda kv: -kv[1]):
     print(f"   refused: {k}: {c}")
 if M.RESTART_ON:                                                   # block 24, G2
-    n_rs = sum(1 for _, _, e, _ in rl if e == "restart")
-    print(f"Restart from hover (G2, on): {n_rs} times by {len({a for _, a, e, _ in rl if e == 'restart'})} L+C")
+    rs = [a for _, a, e, _ in rl if e == "restart"]
+    print(f"Restart from hover (G2, on): {len(rs)} times by {len({a for a in rs if a.startswith('LC')})} L+C and "
+          f"{len({a for a in rs if a.startswith('MC')})} MC")
 
 for typ, (vmax, vsmin, vsmax, axmax, hmax) in sorted(perf_seen.items()):
     print(f"BlueSky limits {typ}: speed max {vmax:.1f} m/s, vertical {vsmin:.1f} to {vsmax:.1f} m/s, "
