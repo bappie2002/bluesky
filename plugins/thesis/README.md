@@ -1,6 +1,8 @@
 # Thesis-plugins voor BlueSky
 
-Vier plugins voor de aankomstsimulatie bij de droneport. BlueSky vindt ze vanzelf in deze map.
+Vier plugins voor de aankomstsimulatie bij de droneport. BlueSky vindt ze vanzelf in deze map. Hoe ze samen werken, met elk
+getal: `experimenten/docs/UITLEG.md`. `archief/` bevat alleen documenten (nooit een `.py` daar neerzetten: BlueSky laadt
+elk `.py`-bestand onder `plugins/`). Na een wijziging: `python experimenten/tools/controle.py` vanuit `afstuderen`.
 
 | Plugin | Bestand | Wat hij doet |
 |---|---|---|
