@@ -28,12 +28,20 @@ Rules of the structure (codes of the methodology and the Keuzes-Excel)
   - P-17 making room: a leader with an L+C behind it closer than the L+C can tolerate, or with an announced L+C that
     would arrive that close, speeds up to V_MAX (MC 11.18, L+C 15.4 m/s), also on the entry leg, and so does the
     drone ahead of it while within reach (restore_flags). A multicopter follower falls back itself.
+  - G3 hand-over protection (block 29): a drone on its entry leg whose follower was just handed over closer than
+    SEP_H + one update + G3_BUFFER, or whose next announced drone would be, does not slow down: it keeps the follower's
+    speed (or the speed that gives the announced drone that distance), may use the margin to its own leader for it
+    (down to SEP_H + one update + G3_BUFFER), and the drone ahead of it makes room (handover_protect, restore_flags).
+    Everything stays inside the structure; the transit never waits.
   - Gentle braking: a drone with an L+C behind it in its lane brakes with the deceleration of the L+C (lc_like).
   - P-16 fixed turn: every drone turns from its entry leg onto its arc along one circle per lane, TURN_MARGIN x the
     turn radius at the highest speed of the lane (MC lanes 34.2 m, L+C and shared lanes 64.8 m).
   - P-18 keep flying (RING_ON; M.may_ring): an L+C (with RING_MC also a multicopter, block 27) that is not cleared
     where it would start braking for the end of its arc flies on to the arc of the opposite gate if ring_check allows
     it; otherwise it brakes and hovers.
+  - Ring (block 29): a drone on the ring also keeps its gap to the last drone on the arc it is about to join, and that
+    drone makes room for an L+C; ring_check counts with the earliest time the drone can be at the junction, because it
+    may speed up to make room on the way.
   - G2 restart (RESTART_ON, on since block 27): a drone that may keep flying and hovers at the end of its arc checks
     every update whether it may fly on from there (ring_check, timed from hover) and does so, unless its clearance is
     expected within T_RESTART_MIN.
@@ -118,6 +126,7 @@ class Vpms(core.Entity):
             self.ring_go = np.array([], dtype=int)   # keep flying at the end of this arc: 0 open, 1 yes, -1 no (P-18)
             self.t_ring = np.array([])               # time it first started to keep flying
             self.turning = np.array([], dtype=bool)  # on its fixed turn onto the arc (P-16)
+            self.protected = np.array([], dtype=bool)  # kept its speed for a drone handed over behind it (G3)
         self.reset_state()
 
     def reset_state(self):
@@ -138,6 +147,7 @@ class Vpms(core.Entity):
         self.sched_id = np.array([], dtype=object)
         self.registered = set()      # call signs created by TRAFFIC (no longer announced)
         self.gentle = set()          # indices that brake as an L+C this update (lc_like)
+        self.protect = {}            # index -> lowest speed this update (G3 hand-over protection)
 
     def reset(self):
         super().reset()
@@ -189,6 +199,7 @@ class Vpms(core.Entity):
             self.speedup[k] = False
             self.ring_go[k] = 0
             self.turning[k] = False
+            self.protected[k] = False
 
     def event(self, i, name, info=""):
         fl = flightlog()
@@ -270,12 +281,23 @@ class Vpms(core.Entity):
             return leg - d_start[i]
         return leg + M.arc_radius(lc) * np.radians(progress[i])
 
-    def restore_flags(self, idx, x, y, progress, d_start, now=None):
+    def restore_flags(self, idx, x, y, progress, d_start, now=None, seeds=None):
         """Making room (P-17): the leaders that speed up, as {index: (for whom, gap)}. Per lane, a leader whose follower
         is an L+C closer than GAP_MIN + T_CLOSE x (V_ARC of the L+C - leader speed) speeds up; so does the last drone of a
         lane when an announced L+C would pass the gate that close behind it; and so does the drone ahead of a leader that
         speeds up while it is within reach (a chain). A multicopter follower does not make its leader speed up."""
         restore, moving = {}, (M.ENTRY, M.ARC, M.RING)
+        for i in idx:                       # block 29: the last drone on an arc makes room for an L+C ring flyer that is
+            if self.state[i] != M.RING or not self.is_lc[i]:                # about to join that arc behind it
+                continue
+            g2 = (int(self.gate[i]) + 2) % len(M.GATE_BEARINGS)
+            ahead2 = [j for j in idx if int(self.gate[j]) == g2 and self.state[j] == M.ARC
+                      and M.arc_key(g2, self.is_lc[j]) == M.arc_key(g2, True)]
+            if ahead2:
+                lead = min(ahead2, key=lambda j: progress[j])
+                gap = float(np.hypot(x[lead] - x[i], y[lead] - y[i]))
+                if gap < M.GAP_MIN + M.T_CLOSE * max(M.V_ARC[1] - float(traf.tas[lead]), 0.0):
+                    restore.setdefault(lead, (traf.id[i], gap))
         for key, members in self.lane_order(idx, progress, d_start).items():
             members.sort(reverse=True)                          # first = furthest along the lane
             pairs = []
@@ -294,12 +316,51 @@ class Vpms(core.Entity):
                     if lc_a and gap_pred < M.GAP_MIN + M.T_CLOSE * max(M.V_ARC[1] - float(traf.tas[last]), 0.0):
                         restore[last] = (f"an L+C announced in {t_a - now:.1f} s", gap_pred)
                         break
+            for _, j in members:                                # G3: drones ahead of a protected drone
+                if seeds and j in seeds and j not in restore and self.state[j] in moving:
+                    restore[j] = seeds[j]
             for lead, foll, gap in reversed(pairs):             # the chain
                 if foll in restore and lead not in restore:
                     reach = M.GAP_MIN + M.T_CLOSE * max(M.V_MAX[int(self.is_lc[foll])] - M.V_ARC[int(self.is_lc[lead])], 0.0)
                     if gap < reach:
                         restore[lead] = (traf.id[foll], gap)
         return restore
+
+    def handover_protect(self, idx, x, y, progress, d_start, now):
+        """G3 hand-over protection (block 29): {index: lowest speed} for drones on the entry leg that must not slow down,
+        because the drone behind them in their lane was just handed over at the minimum, or the next drone announced
+        for their lane would otherwise be handed over closer than SEP_H plus one update and G3_BUFFER. The transit
+        delivers a drone SEP_H behind the previous one at its entry speed; when that drone slows down right after the
+        gate (its lane is full), the new one appears too close. The protected drone keeps the follower's speed, or the
+        speed that gives the announced drone its distance, and may use the margin to its own leader for it (fly_entry_legs)."""
+        prot, room = {}, {}
+        for key, members in self.lane_order(idx, progress, d_start).items():
+            members.sort(reverse=True)                          # first = furthest along the lane
+            for (_, lead), (_, foll) in zip(members, members[1:]):
+                if self.state[lead] != M.ENTRY or self.state[foll] != M.ENTRY:
+                    continue
+                v_f = float(traf.tas[foll])
+                gap = float(np.hypot(x[lead] - x[foll], y[lead] - y[foll]))
+                if gap < M.SEP_H + v_f * M.DT + M.G3_BUFFER:
+                    prot[lead] = max(prot.get(lead, 0.0), v_f)
+            last = members[-1][1]
+            if self.state[last] != M.ENTRY:
+                continue
+            s_last = self.along_lane(last, progress, d_start)
+            for t_a, lc_a in self.announced(now, key=key):      # only the next drone of this lane
+                v0 = M.V_ENTRY[int(lc_a)]
+                need = M.SEP_H + v0 * M.DT + M.G3_BUFFER
+                dt_a = max(t_a - now, M.DT)
+                if s_last + float(traf.tas[last]) * dt_a < need:
+                    v_req = min(max(v0, (need - s_last) / dt_a), M.V_MAX[int(self.is_lc[last])])
+                    prot[last] = max(prot.get(last, 0.0), v_req)
+                break
+            for (_, lead), (_, foll) in zip(members, members[1:]):   # the drone ahead of a protected drone makes room
+                if foll in prot and self.state[lead] in (M.ENTRY, M.ARC, M.RING):
+                    gap = float(np.hypot(x[lead] - x[foll], y[lead] - y[foll]))
+                    if gap < M.GAP_MIN + M.T_CLOSE * max(prot[foll] - float(traf.tas[lead]), 0.0):
+                        room[lead] = (f"hand-over behind {traf.id[foll]}", gap)
+        return prot, room
 
     def ring_check(self, i, x, y, progress, idx, now, d_own, v0=None):
         """Keep flying (P-18): may drone i, which would start braking for the end of its arc now, fly on to the arc of the
@@ -317,6 +378,9 @@ class Vpms(core.Entity):
         def ahead(d):                                                       # s to fly d m from here
             return d / v_r if v0 is None else M.travel_time(d, v0, v_r, M.A_ACC[int(lc_i)])
         t_j = now + ahead(d_own + r * np.radians(180.0 - M.ARC_DEG))         # at the start of the opposite arc
+        v_fast = M.V_MAX[int(lc_i)]                                         # block 29: it may make room on the way,
+        t_jf = now + M.travel_time(d_own + r * np.radians(180.0 - M.ARC_DEG),  # so it can be there this early
+                                   v_r if v0 is None else v0, v_fast, M.A_ACC[int(lc_i)])
         w = M.GAP_MIN / v_r + M.T_RING_MARGIN
         for j in idx:
             if j == i or self.state[j] not in M.WAITING or M.arc_key(self.gate[j], self.is_lc[j]) != key2:
@@ -330,10 +394,10 @@ class Vpms(core.Entity):
                 d = float(np.hypot(tx - x[j], ty - y[j]))
                 t_lo = now + d / M.V_MAX[int(self.is_lc[j])]
                 t_hi = now + d / max(float(traf.tas[j]), 1.0)
-                if t_lo - w < t_j < t_hi + w:
-                    return False, f"{traf.id[j]} reaches the junction in {t_lo - now:.0f}-{t_hi - now:.0f} s, ring {t_j - now:.0f} s"
+                if t_lo - w < t_j and t_jf < t_hi + w:
+                    return False, f"{traf.id[j]} reaches the junction in {t_lo - now:.0f}-{t_hi - now:.0f} s, ring {t_jf - now:.0f}-{t_j - now:.0f} s"
             elif self.state[j] == M.ARC:
-                s_k = r * np.radians(progress[j]) + float(traf.tas[j]) * (t_j - now)
+                s_k = r * np.radians(progress[j]) + float(traf.tas[j]) * (t_jf - now)
                 if s_k < M.GAP_MIN + v_r * M.T_RING_MARGIN:
                     return False, f"{traf.id[j]} only {s_k:.0f} m into the arc of gate {g2} at the junction"
         leg = {lc: M.gate_distance() - M.arc_start_along(lc) for lc in (False, True)}
@@ -341,11 +405,11 @@ class Vpms(core.Entity):
             if M.VARIANT == "speed" and lc_a != lc_i:
                 continue                                           # another lane (L+C: the MC line below)
             if lc_i and not lc_a:                                  # shared: an MC would be ahead of it or too close
-                if t_a + leg[False] / M.V_MAX[0] < t_j + w:
+                if t_a + leg[False] / M.V_MAX[0] < t_j + w:          # (t_j: the latest it can be there)
                     return False, f"multicopter announced at gate {g2} in {t_a - now:.0f} s"
                 continue
             t_lo, t_hi = t_a + leg[lc_a] / M.V_MAX[int(lc_a)], t_a + leg[lc_a] / M.V_ENTRY[int(lc_a)]
-            if t_lo - w < t_j < t_hi + w:
+            if t_lo - w < t_j and t_jf < t_hi + w:
                 return False, f"{'L+C' if lc_a else 'multicopter'} announced at gate {g2} in {t_a - now:.0f} s"
         if M.VARIANT == "speed" and lc_i:                            # it crosses the MC entry line of gate g2
             along_c = np.sqrt(max(r ** 2 - M.lateral(False) ** 2, 0.0))
@@ -482,8 +546,10 @@ class Vpms(core.Entity):
         for i in entry:
             tx, ty = M.arc_start(self.gate[i], self.is_lc[i])
             d_start[i] = np.hypot(tx - x[i], ty - y[i])
-        restore = self.restore_flags(idx, x, y, progress, d_start, now)          # making room (P-17)
+        self.protect, room = self.handover_protect(idx, x, y, progress, d_start, now)  # G3 hand-over protection
+        restore = self.restore_flags(idx, x, y, progress, d_start, now, room)    # making room (P-17, G3)
         self.gentle = set(restore) | self.lc_behind(idx, progress, d_start)     # gentle braking
+
         for i in idx:
             if self.state[i] not in (M.ENTRY, M.ARC, M.RING) and self.speedup[i]:
                 self.set_speedup(i, False, "left the lane")
@@ -514,6 +580,17 @@ class Vpms(core.Entity):
                 gap = np.hypot(x[lead] - x[i], y[lead] - y[i])  # straight line, as the separation check
                 v_lead = 0.0 if self.state[lead] == M.HOLD else traf.tas[lead]
                 v = self.lane_speed(i, lead, gap, v_lead, v, restore)
+            if i in self.protect:                              # G3: do not slow down right after a hand-over; use the
+                v_safe = M.V_MAX[lc]                           # margin to the drone ahead (down to SEP_H + one update)
+                if lead is not None:
+                    gap_eff = gap + M.GAP_MIN - (M.SEP_H + M.V_MAX[lc] * M.DT + M.G3_BUFFER)
+                    v_safe = M.follow_speed(gap_eff, v_lead, M.V_MAX[lc], self.lc_like(i))
+                v_prot = min(self.protect[i], v_safe)
+                if v_prot > v + 0.05:
+                    if not self.protected[i]:
+                        self.event(i, "handover_protect", f"keeps {v_prot:.1f} m/s instead of {v:.1f} m/s")
+                    self.protected[i] = True
+                v = max(v, v_prot)
             v = self.departing_limit(i, idx, x, y, dist, v)
             if i in restore:
                 self.set_speedup(i, v > M.V_ENTRY[lc] + 0.1, "for {}, gap {:.0f} m".format(*restore[i]))
@@ -599,6 +676,16 @@ class Vpms(core.Entity):
                     if self.state[lead] == M.ARC and self.ring_go[lead] != 1 and self.state[i] == M.ARC:
                         d_end = r * np.radians(max(M.ARC_DEG - progress[i], 0.0))   # the leader may stop at the end
                         v = min(v, np.sqrt(2 * self.a_dec(i) * max(d_end - M.GAP_MIN, 0.0)))  # of the arc: stop GAP_MIN before
+                if self.state[i] == M.RING:                    # block 29: also behind the last drone on the arc it
+                    g2 = (int(self.gate[i]) + 2) % len(M.GATE_BEARINGS)       # is about to join (across the junction)
+                    key2 = M.arc_key(g2, self.is_lc[i])
+                    ahead2 = [j for j in on_arc if j != i and int(self.gate[j]) == g2
+                              and M.arc_key(g2, self.is_lc[j]) == key2 and self.state[j] in (M.ARC, M.HOLD)]
+                    if ahead2:
+                        lead2 = min(ahead2, key=lambda j: progress[j])
+                        gap2 = np.hypot(x[lead2] - x[i], y[lead2] - y[i])
+                        v_lead2 = 0.0 if self.state[lead2] == M.HOLD else traf.tas[lead2]
+                        v = min(v, self.lane_speed(i, lead2, gap2, v_lead2, v, restore))
                 v = self.departing_limit(i, idx, x, y, dist, v)
                 if i in restore:
                     self.set_speedup(i, v > M.V_ARC[lc] + 0.1, "for {}, gap {:.0f} m".format(*restore[i]))
