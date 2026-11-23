@@ -27,7 +27,10 @@ Rules of the structure (codes of the methodology and the Keuzes-Excel)
     that left the lane for the merge point stays its leader until SEP_H inside the arc (departing_limit).
   - P-17 making room: a leader with an L+C behind it closer than the L+C can tolerate, or with an announced L+C that
     would arrive that close, speeds up to V_MAX (MC 11.18, L+C 15.4 m/s), also on the entry leg, and so does the
-    drone ahead of it while within reach (restore_flags). A multicopter follower falls back itself.
+    drone ahead of it while within reach (restore_flags). A multicopter follower falls back itself. An L+C behind an
+    L+C that makes room flies no faster than it only while that leader flies at its arc speed; behind an L+C that
+    slows down or stands still it keeps GAP_MIN (lane_speed, block 31). A drone cleared while making room keeps
+    V_MAX on its direct leg while it still leads its lane (keep_of, block 31; part of the prediction and the plan).
   - G3 hand-over protection (block 29): a drone on its entry leg whose follower was just handed over closer than
     SEP_H + one update + G3_BUFFER, or whose next announced drone would be, does not slow down: it keeps the follower's
     speed (or the speed that gives the announced drone that distance), may use the margin to its own leader for it
@@ -41,7 +44,8 @@ Rules of the structure (codes of the methodology and the Keuzes-Excel)
     it; otherwise it brakes and hovers.
   - Ring (block 29): a drone on the ring also keeps its gap to the last drone on the arc it is about to join, and that
     drone makes room for an L+C; ring_check counts with the earliest time the drone can be at the junction, because it
-    may speed up to make room on the way.
+    may speed up to make room on the way. Block 31: no L+C joins the ring while a multicopter of the opposite gate is
+    slow on its entry leg near the crossing (its queue reaches the L+C circle).
   - G2 restart (RESTART_ON, on since block 27): a drone that may keep flying and hovers at the end of its arc checks
     every update whether it may fly on from there (ring_check, timed from hover) and does so, unless its clearance is
     expected within T_RESTART_MIN.
@@ -49,7 +53,8 @@ Rules of the structure (codes of the methodology and the Keuzes-Excel)
     M.announce_horizon from the ring flights that are on (23 s with ring and restart, 42 s with RINGMC), unless set
     with VPMS HORIZON.
   - Clearance: FCFS in the order of passing the gate, T_TARGET (40 s) apart at the merge point, given when the first
-    drone is on its arc (next_clearance). Its arrival is predicted by flying the direct leg ahead (predict_time).
+    drone is on its arc (next_clearance). Its arrival is predicted by flying the direct leg ahead (predict_time, with
+    the speed it keeps, keep_of).
     A clearance waits where no conflict-free descent exists (no-go zone).
   - Merge point and column: the merge point is not free while the drone below is less than K_SPACING x SEP_V lower;
     a drone waits K_SPACING x SEP_H before it.
@@ -136,6 +141,7 @@ class Vpms(core.Entity):
         self.touchdowns = []         # (time, acid) on the pad
         self.descent = {}            # acid -> (clearance time, planned height per update) on the direct leg
         self.nogo_since = {}         # acid -> first time its clearance waited for a no-go zone
+        self.keep_v = {}             # acid -> speed it keeps on the direct leg: cleared while making room (block 31)
         self.nogo_delays = []        # (acid, s) clearance delayed by a no-go zone
         self.nogo_hold = []          # drones in a hold without a conflict-free descent (expected none)
         self.close_entries = []      # (time, acid, other, dh) created within SEP_H of another (TRAFFIC; expected none)
@@ -268,9 +274,13 @@ class Vpms(core.Entity):
     def lane_speed(self, i, lead, gap, v_lead, v, restore=()):
         """Speed of drone i in its lane behind `lead` at this gap (m). An L+C whose L+C leader makes room for it does
         not fall back (that would take it off its wing): it flies no faster than its leader. Otherwise the normal rule
-        (follow_speed), also behind a multicopter that makes room."""
-        if self.is_lc[i] and self.is_lc[lead] and (lead in restore or self.speedup[lead]) and gap > M.SEP_H + 2.0:
-            return float(min(v, v_lead))
+        (follow_speed), also behind a multicopter that makes room. Block 31: only while that leader still flies at its
+        arc speed; behind a leader that slows down or stands still (the end of a queue) the L+C leaves its wing anyway,
+        and with "no faster than the leader" it stopped about 115 m behind instead of GAP_MIN (L+C lanes then held about
+        12 instead of about 20 drones)."""
+        if (self.is_lc[i] and self.is_lc[lead] and (lead in restore or self.speedup[lead]) and gap > M.SEP_H + 2.0
+                and v_lead >= M.V_ARC[1] - 0.5):     # block 31: only while the leader is on its wing and can make room;
+            return float(min(v, v_lead))         # a leader that stands still cannot, so the normal rule (48 m) applies
         return M.follow_speed(gap, v_lead, v, self.lc_like(i))
 
     def along_lane(self, i, progress, d_start):
@@ -424,7 +434,11 @@ class Vpms(core.Entity):
                 if self.state[j] != M.ENTRY or M.arc_key(self.gate[j], self.is_lc[j]) != key_mc:
                     continue
                 rem = float(x[j] * np.sin(b) + y[j] * np.cos(b)) - along_c    # m to the crossing (< 0: passed)
-                if rem < -M.GAP_MIN:
+                if rem < -2 * M.GAP_MIN:
+                    continue
+                if rem < M.GAP_MIN and float(traf.tas[j]) < M.V_ENTRY[0] - 1.0:   # block 31: an MC that slows down
+                    return False, f"multicopter {traf.id[j]} slow near the crossing of gate {g2}"   # near the crossing
+                if rem < -M.GAP_MIN:                                             # (its queue reaches the L+C circle)
                     continue
                 v_j = max(float(traf.tas[j]), 1.0)
                 t_lo = now + (rem / M.V_MAX[0] if rem > 0 else rem / v_j)
@@ -459,8 +473,20 @@ class Vpms(core.Entity):
         its prediction error."""
         gs = self.cruise_gs(i, -y[i] / dist[i], -x[i] / dist[i])
         turn = abs((traf.hdg[i] - np.degrees(np.arctan2(-x[i], -y[i])) + 180) % 360 - 180)
-        t = M.predict_time(dist[i], gs, traf.tas[i], turn, self.is_lc[i])   # until standstill on the merge point
+        t = M.predict_time(dist[i], gs, traf.tas[i], turn, self.is_lc[i],   # until standstill on the merge point
+                           self.keep_of(i, dist))
         return t * (1 + self.eta_err[i])
+
+    def keep_of(self, i, dist):
+        """Block 31: a drone that is cleared while it makes room for a drone behind it in its lane (speedup) keeps that
+        speed (V_MAX) on its direct leg while it is still a leader of that lane (departing_limit: until SEP_H inside
+        its arc). Before block 31 it slowed down to its direct-leg speed at once, and an L+C handed over close behind
+        it could not brake hard enough (31-32 m, concentration runs, 19-11-2026). Part of the prediction and of the
+        descent plan, so the drone still arrives at the merge point when planned. Returns (v_keep, d_keep) or None."""
+        d_keep = float(M.arc_radius(self.is_lc[i])) - M.SEP_H
+        if not self.speedup[i] or dist[i] < d_keep:
+            return None
+        return float(M.V_MAX[int(self.is_lc[i])]), d_keep
 
     def set_speedup(self, i, on, info=""):
         """Keep the speedup flag of drone i and log its start and end."""
@@ -730,13 +756,14 @@ class Vpms(core.Entity):
             t_pred = self.predicted_direct(i, x, y, dist)          # what the sequencer believes
             if now + t_pred >= self.t_last_merge + M.T_TARGET - 1e-6:
                 acid = traf.id[i]
+                keep = self.keep_of(i, dist)                      # block 31
                 plan = M.plan_descent(self.gate[i], self.is_lc[i], float(x[i]), float(y[i]), float(traf.tas[i]),
-                                    float(traf.hdg[i]), float(traf.alt[i]), gs)
+                                    float(traf.hdg[i]), float(traf.alt[i]), gs, keep=keep)
                 if plan is None and self.state[i] == M.HOLD:     # never expected: clear it without avoiding
                     self.nogo_hold.append(acid)
                     self.event(i, "nogo_hold", "no conflict-free descent from the hold")
                     plan = M.plan_descent(self.gate[i], self.is_lc[i], float(x[i]), float(y[i]), float(traf.tas[i]),
-                                        float(traf.hdg[i]), float(traf.alt[i]), gs, avoid=False)
+                                        float(traf.hdg[i]), float(traf.alt[i]), gs, avoid=False, keep=keep)
                 if plan is None:                               # no-go zone: the clearance waits
                     if acid not in self.nogo_since:
                         self.nogo_since[acid] = now
@@ -746,6 +773,8 @@ class Vpms(core.Entity):
                     if t_wait is not None:
                         self.nogo_delays.append((acid, now - t_wait))
                     self.state[i] = M.DIRECT
+                    if keep is not None:                          # block 31: keeps its speed for a while
+                        self.keep_v[acid] = keep
                     self.t_merge[i] = self.t_last_merge = now + t_pred
                     self.descent[acid] = (now, plan)
                     self.event(i, "direct_to", f"planned merge {now + t_pred:.1f}"
@@ -759,6 +788,7 @@ class Vpms(core.Entity):
             if dist[i] < M.ARRIVE_R and traf.gs[i] < M.ARRIVE_V:          # standstill on the merge point
                 self.state[i] = M.FINAL
                 self.descent.pop(traf.id[i], None)
+                self.keep_v.pop(traf.id[i], None)
                 self.merges.append((now, traf.id[i]))
                 self.event(i, "merge")
                 self.hover(i, 0.0, 0.0)
@@ -768,7 +798,9 @@ class Vpms(core.Entity):
             stop = 0.0
             if busy_merge or any(self.state[j] == M.DIRECT and dist[j] < dist[i] for j in idx if j != i):
                 stop = M.K_SPACING * M.SEP_H
-            v = min(self.cruise_gs(i, un, ue),                    # brake one update early: no overshoot
+            v_cruise = M.keep_cruise(self.cruise_gs(i, un, ue), dist[i],    # block 31: cleared while making room:
+                                     self.keep_v.get(traf.id[i]))           # keeps that speed for a while (keep_of)
+            v = min(v_cruise,                                     # brake one update early: no overshoot
                     np.sqrt(2 * M.A_DECEL[int(self.is_lc[i])] * max(dist[i] - stop - traf.gs[i] * M.DT, 0.0)))
             self.fly_ground(i, v * un, v * ue)
             t0, plan = self.descent.get(traf.id[i], (now, None))  # height: the plan, one update ahead

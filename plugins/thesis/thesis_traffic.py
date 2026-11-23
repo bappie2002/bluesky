@@ -138,9 +138,10 @@ class Traffic(core.Entity):
     @stack.command(name="TRAFFIC")
     def start(self, demand: str, seed: str = "1", eta: float = 0.0, pad: str = "BASE",
               warmup: float = M.WARMUP, measure: float = M.MEASURE, gate_share: float = 0.25,
-              share_lc: float = M.SHARE_LC):
-        """TRAFFIC demand seed [eta_err_pct] [BASE|LONG] [warmup_s] [measure_s] [gate_share] [share_lc], or
-        TRAFFIC VIDEO ON|OFF"""
+              share_lc: float = M.SHARE_LC, soc: str = "BASE", peak: str = "NONE"):
+        """TRAFFIC demand seed [eta_err_pct] [BASE|LONG] [warmup_s] [measure_s] [gate_share] [share_lc] [soc] [peak], or
+        TRAFFIC VIDEO ON|OFF. soc: "low_high" (e.g. 0.3_0.7) or BASE; peak: "factor_start_duration" in s from the
+        start (e.g. 1.5_2700_1800) or NONE (block 31)."""
         if demand.upper() == "VIDEO":
             self.video = str(seed).upper() not in ("OFF", "0")
             return True, f"TRAFFIC video mode {'on: announced drones shown as ghosts AN####' if self.video else 'off'}"
@@ -153,8 +154,13 @@ class Traffic(core.Entity):
             return False, f"TRAFFIC: {e}"
         if not 0.0 <= float(share_lc) <= 1.0:
             return False, f"TRAFFIC: share of L+C must be between 0 and 1, got {share_lc}"
+        try:
+            soc_range, pk = M.parse_soc(soc), M.parse_peak(peak)
+        except ValueError as e:
+            return False, f"TRAFFIC: {e}"
         self.plan = M.draw(demand, int(seed), warmup + measure, pad, eta, M.V_ENTRY, M.SEP_H,
-                           gate_share=float(gate_share), share_lc=float(share_lc))
+                           gate_share=float(gate_share), share_lc=float(share_lc),
+                           soc_range=None if tuple(soc_range) == tuple(M.SOC_RANGE) else soc_range, peak=pk)
         self.t0, self.next, self.waiting, self.measured, self.done = sim.simt, 0, [], set(), False
         p = self.plan
         if vpms is not None:                            # the list of arrivals for VPMS
@@ -180,7 +186,12 @@ class Traffic(core.Entity):
                         ring_mc=bool(M.RING_MC), gate_share=float(shares[0]), share_lc=float(share_lc),   # block 27
                         horizon=float(M.H_ANNOUNCE), horizon_set=bool(M.H_SET), v_mc_max=float(M.V_MC_MAX),
                         turn_mc=float(M.turn_lookahead(False)), turn_lc=float(M.turn_lookahead(True)),
-                        gate_rule="per gate SEP_H / V_ENTRY of the previous drone")
+                        gate_rule="per gate SEP_H / V_ENTRY of the previous drone",
+                        soc_low=float(soc_range[0]), soc_high=float(soc_range[1]),        # block 31
+                        peak_factor=float(pk[0]) if pk else 1.0, peak_start=float(pk[1]) if pk else 0.0,
+                        peak_duration=float(pk[2]) if pk else 0.0)
         return True, (f"TRAFFIC: {n} arrivals ({n_lc} L+C) in {warmup + measure:.0f} s, "
-                      f"seed {seed}, prediction error {eta} %, pad {pad}, {rule}")
+                      f"seed {seed}, prediction error {eta} %, pad {pad}, {rule}"
+                      + (f"; soc {soc_range[0]:g}-{soc_range[1]:g}" if tuple(soc_range) != tuple(M.SOC_RANGE) else "")
+                      + (f"; peak x{pk[0]:g} from {pk[1]:g} s for {pk[2]:g} s" if pk else ""))
 
